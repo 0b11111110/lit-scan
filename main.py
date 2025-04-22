@@ -1,0 +1,407 @@
+import argparse
+import os
+import re
+import shutil
+# import sys
+import cv2
+import numpy as np
+
+# import matplotlib.pyplot as plt
+import pytesseract
+
+# import easyocr
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+# from matplotlib.widgets import TextBox
+
+## you have to have installed tesseract [in $PATH] with russian language https://github.com/tesseract-ocr/tesseract/releases
+# Установите путь к tesseract.exe, если он не в PATH
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Настройки по умолчанию
+DEFAULT_COORDS = (1800, 20, 700, 350)  # x, y, w, h
+needed_manual_recognizing = []  # для не распознанных
+
+# def enable_unicode_windows():
+#     if sys.platform == 'win32':
+#         import ctypes
+#         kernel32 = ctypes.windll.kernel32
+#         kernel32.SetConsoleCP(65001)
+#         kernel32.SetConsoleOutputCP(65001)
+
+# enable_unicode_windows()
+
+
+def ensure_valid_folder_name(name):
+    """Заменяет запрещённые символы в именах папок"""
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, "_")
+    return name.strip()
+
+
+def find_text_contour(image):
+    """Находит прямоугольный контур вокруг текста"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edged = cv2.Canny(blurred, 50, 200)
+
+    contours, _ = cv2.findContours(
+        edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+
+    for contour in contours:
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+
+        if len(approx) == 4:  # Если найден прямоугольник
+            return approx
+
+    return None
+
+
+def crop_to_contour(image, contour):
+    """Обрезает изображение по найденному контуру"""
+    rect = cv2.boundingRect(contour)
+    x, y, w, h = rect
+    cropped = image[y : y + h, x : x + w]
+    return cropped
+
+
+def preprocess_image(image):
+    """Улучшение изображения перед распознаванием"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    denoised = cv2.fastNlMeansDenoising(enhanced, h=30)
+    _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened = cv2.filter2D(thresh, -1, kernel)
+    return sharpened
+
+
+# def recognize_with_easyocr(image):
+#     """Распознавание с помощью EasyOCR"""
+#     reader = easyocr.Reader(["ru"])
+#     result = reader.readtext(image, detail=0)
+#     return "".join(result).upper()
+
+
+def recognize_with_tesseract(image):
+    """Распознавание с помощью Tesseract"""
+    custom_config = r"--oem 3 --psm 6"
+    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"  # не нужно, тк проблема с кодировкой и он их не так воспринимает
+    text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
+    return "".join(c for c in text if c.isalnum())
+
+
+def correct_text(text):
+    """Коррекция распознанного текста"""
+    correction_map_letters = {
+        "0": "О",
+        "4": "А",
+        "A": "А",
+        "B": "В",
+        "C": "С",
+        "D": "О",
+        "E": "Е",
+        "H": "Н",
+        "K": "К",
+        "M": "М",
+        "O": "О",
+        "P": "Р",
+        "T": "Т",
+        "X": "Х",
+        "Y": "У",
+    }
+    correction_map_digits = {
+        "А": "4",
+        "O": "0",  # латинская
+        "О": "0",
+        "З": "3",
+        "Ч": "4",
+        "Б": "6",
+        "T": "7",  # латинская
+        "Т": "7",
+        " ": "",
+        "D": "0",
+        "S": "5",
+    }
+    if text:
+        corrected = [
+            (
+                correction_map_letters[text[0]]
+                if text[0] in correction_map_letters
+                else text[0]
+            )
+        ]
+    else:
+        return ""
+    for c in text.upper()[1:]:
+        if c in correction_map_digits:
+            corrected.append(correction_map_digits[c])
+        elif c in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789":
+            corrected.append(c)
+    return "".join(corrected)
+
+
+def process_image(image_path, coords, debug=False):
+    """Основная функция обработки изображения"""
+    x, y, w, h = coords
+    img = cv2.imread(image_path)
+    if img is None:
+        print(f"Ошибка загрузки: {image_path}")
+        return None
+
+    # Вырезаем область интереса
+    roi = img[y : y + h, x : x + w]
+
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    if debug:
+        debug_dir = "ocr_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(f"{debug_dir}/{base_name}_roi.png", roi)
+
+    # Находим контур текста
+    contour = find_text_contour(roi)
+
+    if contour is not None:
+        # Обрезаем по контуру
+        cropped = crop_to_contour(roi, contour)
+
+        if debug:
+            cv2.imwrite(f"{debug_dir}/{base_name}_cropped.png", cropped)
+    else:
+        cropped = roi  # Если контур не найден, используем всю область
+
+    # Предварительная обработка
+    processed = preprocess_image(cropped)
+
+    if debug:
+        cv2.imwrite(f"{debug_dir}/{base_name}_processed.png", processed)
+
+    # не# Комбинированное распознавание
+    # text_easyocr = recognize_with_easyocr(processed)
+    text_tesseract = recognize_with_tesseract(processed)
+
+    # Выбираем лучший результат
+    recognized_text = text_tesseract  # (
+    #     text_easyocr if len(text_easyocr) > len(text_tesseract) else text_tesseract
+    # )
+    corrected_text = correct_text(recognized_text)
+    # corrected_text = recognized_text
+    if not re.match(r"^[А-Я]\d{4}$", corrected_text):
+        needed_manual_recognizing.append(base_name)
+        corrected_text = ""
+
+    return corrected_text if corrected_text else None
+
+
+# def manual_check_plt(img, predicted_text):
+#     plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+#     plt.title(f"Распознано: {predicted_text}")
+#     plt.axis('off')
+#     t_box = plt.axes([0.4, 0.1, 0.5, 0.075])
+#     text_box = TextBox(t_box, 'Корректный:', initial=predicted_text)
+#     def update(_):
+#         nonlocal predicted_text
+#         predicted_text = text_box.text_disp._text
+#     text_box.on_text_change(update)
+#     def close(_):
+#         plt.close()
+#     text_box.on_submit(close)
+#     text_box.set_active(True)
+#     # Выделяем весь текст (если возможно)
+#     if hasattr(text_box, '_cursor'):
+#         text_box._cursor = 0
+#         text_box._selection_length = len(predicted_text)
+#     # Пытаемся установить фокус разными способами
+#     try:
+#         # Для Tkinter
+#         if 'Tk' in plt.get_backend():
+#             fig.canvas.manager.window.after(100, lambda: fig.canvas.manager.window.focus_force())
+#             fig.canvas.manager.window.after(150, lambda: text_box._textbox.focus_set())
+
+#         # Для Qt
+#         elif 'Qt' in plt.get_backend():
+#             fig.canvas.manager.window.activateWindow()
+#             fig.canvas.manager.window.raise_()
+#             text_box._textbox.setFocus()
+
+#         # Выделяем весь текст
+#         if hasattr(text_box, '_cursor'):
+#             text_box._cursor = 0
+#             text_box._selection_length = len(predicted_text)
+#     except:
+#         pass
+#     plt.show(block=True)
+#     # text_box.cursor_index = len(predicted_text)
+
+#     return predicted_text
+
+
+def manual_check(img, predicted_text):
+    root = tk.Tk()
+    root.title("Проверка распознавания")
+
+    # Конвертируем изображение OpenCV для Tkinter
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(img_rgb)
+
+    # Масштабируем изображение если слишком большое
+    max_width = 800
+    if pil_image.width > max_width:
+        ratio = max_width / pil_image.width
+        new_height = int(pil_image.height * ratio)
+        pil_image = pil_image.resize((max_width, new_height), Image.LANCZOS)
+
+    tk_image = ImageTk.PhotoImage(pil_image)
+
+    # Отображаем изображение
+    img_label = ttk.Label(root, image=tk_image)
+    img_label.pack(pady=10)
+
+    # Текст и поле ввода
+    ttk.Label(root, text="Распознанный код:").pack()
+    ttk.Label(root, text=predicted_text, font=("Arial", 12, "bold")).pack()
+
+    ttk.Label(root, text="Исправьте при необходимости:").pack()
+
+    entry_var = tk.StringVar(value=predicted_text)
+    entry = ttk.Entry(root, textvariable=entry_var, width=30, font=("Arial", 12))
+    entry.pack(pady=10)
+
+    # Функция подтверждения
+    def confirm():
+        nonlocal predicted_text
+        predicted_text = entry.get()
+        root.destroy()
+
+    # Кнопка подтверждения
+    btn = ttk.Button(root, text="Подтвердить (Enter)", command=confirm)
+    btn.pack(pady=10)
+
+    # Настройка горячих клавиш
+    entry.bind("<Return>", lambda e: confirm())  # Enter в поле ввода
+    root.bind("<Return>", lambda e: confirm())  # Enter в любом месте окна
+    root.bind("<Escape>", lambda e: exit(1))  # Esc в любом месте окна
+
+    # Установка фокуса и выделение текста
+    entry.focus_set()
+    entry.select_range(0, tk.END)
+
+    # Запускаем окно
+    root.mainloop()
+
+    return predicted_text
+
+
+def organize_files(input_folder, output_base, coords, debug=False, not_fix_wrong=False):
+    """Организация файлов по папкам"""
+    os.makedirs(output_base, exist_ok=True)
+
+    supported_extensions = ("png", "jpg", "jpeg", "tif", "bmp")
+    files = [
+        f for f in os.listdir(input_folder) if f.lower().endswith(supported_extensions)
+    ]
+
+    if not files:
+        print("Нет файлов для обработки!")
+        return
+
+    def process(files, debug=False):
+        for file in files:
+            orig_name = file
+            safe_name = file.encode("ascii", "ignore").decode("ascii")
+            prefix = "tmp-name"
+            try:
+                os.rename(
+                    os.path.join(input_folder, file),
+                    os.path.join(input_folder, prefix + safe_name),
+                )
+            except FileNotFoundError as e:
+                continue
+            file = prefix + safe_name
+            file_path = os.path.join(input_folder, file)
+            code = process_image(file_path, coords, debug)
+
+            if code:
+                folder_name = ensure_valid_folder_name(code)
+                target_folder = os.path.join(output_base, folder_name)
+                os.makedirs(target_folder, exist_ok=True)
+
+                # Копируем файл
+                shutil.copy2(file_path, target_folder)
+                print(f"{orig_name} → {folder_name}")
+
+            else:
+                print(f"Не удалось распознать код в файле {orig_name}")
+            try:
+                os.rename(
+                    os.path.join(input_folder, file),
+                    os.path.join(input_folder, orig_name),
+                )
+                if debug:
+                    print(f"renamed back {file} to {orig_name}")
+                os.rename(
+                    os.path.join(target_folder, file),
+                    os.path.join(target_folder, orig_name),
+                )
+                if debug:
+                    print(f"renamed new {file} to {orig_name}")
+            except Exception as e:
+                if debug:
+                    print(e)
+
+    process(files, debug)
+    if not not_fix_wrong:
+        process(needed_manual_recognizing, debug=True)
+        needed_manual_recognizing.clear()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Программа для автоматической сортировки сканов по распознанным рукописным шифрам"
+    )
+    parser.add_argument("input_folder", help="Папка с исходными изображениями")
+    parser.add_argument("output_base", help="Базовая папка для сортировки результатов")
+    parser.add_argument(
+        "--x", type=int, default=DEFAULT_COORDS[0], help="X координата области с шифром"
+    )
+    parser.add_argument(
+        "--y", type=int, default=DEFAULT_COORDS[1], help="Y координата области с шифром"
+    )
+    parser.add_argument(
+        "--w", type=int, default=DEFAULT_COORDS[2], help="Ширина области с шифром"
+    )
+    parser.add_argument(
+        "--h", type=int, default=DEFAULT_COORDS[3], help="Высота области с шифром"
+    )
+    parser.add_argument(
+        "--not_fix_wrong",
+        action="store_true",
+        help="Не предлагать исправлять все неверно распознанные пока не разложатся все файлы",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Сохранять промежуточные изображения для отладки",
+    )
+
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.input_folder):
+        print(f"Ошибка: папка {args.input_folder} не существует!")
+        exit(1)
+
+    organize_files(
+        input_folder=args.input_folder,
+        output_base=args.output_base,
+        coords=(args.x, args.y, args.w, args.h),
+        debug=args.debug,
+        not_fix_wrong=args.not_fix_wrong,
+    )
