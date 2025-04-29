@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 import shutil
+
 # import sys
 import cv2
 import numpy as np
@@ -13,6 +14,7 @@ import pytesseract
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+
 # from matplotlib.widgets import TextBox
 
 ## you have to have installed tesseract [in $PATH] with russian language https://github.com/tesseract-ocr/tesseract/releases
@@ -22,7 +24,7 @@ from PIL import Image, ImageTk
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # Настройки по умолчанию
-DEFAULT_COORDS = (1800, 20, 700, 350)  # x, y, w, h
+DEFAULT_COORDS = (1100, 0, 1200, 700)  # x, y, w, h
 needed_manual_recognizing = []  # для не распознанных
 
 # def enable_unicode_windows():
@@ -45,9 +47,9 @@ def ensure_valid_folder_name(name):
 
 def find_text_contour(image):
     """Находит прямоугольный контур вокруг текста"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edged = cv2.Canny(blurred, 50, 200)
+    # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(image, (5, 5), 0)
+    edged = cv2.Canny(blurred, 150, 200)
 
     contours, _ = cv2.findContours(
         edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -81,7 +83,8 @@ def preprocess_image(image):
     _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(thresh, -1, kernel)
-    return sharpened
+    clean = cv2.medianBlur(sharpened, 3)
+    return clean
 
 
 # def recognize_with_easyocr(image):
@@ -149,7 +152,7 @@ def correct_text(text):
     return "".join(corrected)
 
 
-def process_image(image_path, coords, debug=False):
+def process_image(image_path, coords, orig_name, need_manual_check=False, debug=False):
     """Основная функция обработки изображения"""
     x, y, w, h = coords
     img = cv2.imread(image_path)
@@ -160,33 +163,33 @@ def process_image(image_path, coords, debug=False):
     # Вырезаем область интереса
     roi = img[y : y + h, x : x + w]
 
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    # base_name = os.path.splitext(os.path.basename(image_path))[0]
     if debug:
         debug_dir = "ocr_debug"
         os.makedirs(debug_dir, exist_ok=True)
-        cv2.imwrite(f"{debug_dir}/{base_name}_roi.png", roi)
+        cv2.imwrite(f"{debug_dir}/{orig_name}_roi.png", roi)
+
+    # Предварительная обработка
+    processed = preprocess_image(roi)
 
     # Находим контур текста
-    contour = find_text_contour(roi)
+    contour = find_text_contour(processed)
 
     if contour is not None:
         # Обрезаем по контуру
-        cropped = crop_to_contour(roi, contour)
+        cropped = crop_to_contour(processed, contour)
 
         if debug:
-            cv2.imwrite(f"{debug_dir}/{base_name}_cropped.png", cropped)
+            cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
     else:
         cropped = roi  # Если контур не найден, используем всю область
 
-    # Предварительная обработка
-    processed = preprocess_image(cropped)
-
-    if debug:
-        cv2.imwrite(f"{debug_dir}/{base_name}_processed.png", processed)
+    # if debug:
+    #     cv2.imwrite(f"{debug_dir}/{base_name}_processed.png", processed)
 
     # не# Комбинированное распознавание
-    # text_easyocr = recognize_with_easyocr(processed)
-    text_tesseract = recognize_with_tesseract(processed)
+    # text_easyocr = recognize_with_easyocr(cropped)
+    text_tesseract = recognize_with_tesseract(cropped)
 
     # Выбираем лучший результат
     recognized_text = text_tesseract  # (
@@ -195,8 +198,12 @@ def process_image(image_path, coords, debug=False):
     corrected_text = correct_text(recognized_text)
     # corrected_text = recognized_text
     if not re.match(r"^[А-Я]\d{4}$", corrected_text):
-        needed_manual_recognizing.append(base_name)
-        corrected_text = ""
+        if need_manual_check:
+            corrected_text = manual_check(processed, corrected_text, orig_name)
+        else:
+            corrected_text = ""
+        if  orig_name not in needed_manual_recognizing:
+            needed_manual_recognizing.append(orig_name)
 
     return corrected_text if corrected_text else None
 
@@ -244,7 +251,7 @@ def process_image(image_path, coords, debug=False):
 #     return predicted_text
 
 
-def manual_check(img, predicted_text):
+def manual_check(img, predicted_text, filename="") -> str:
     root = tk.Tk()
     root.title("Проверка распознавания")
 
@@ -266,10 +273,10 @@ def manual_check(img, predicted_text):
     img_label.pack(pady=10)
 
     # Текст и поле ввода
-    ttk.Label(root, text="Распознанный код:").pack()
+    ttk.Label(root, text=f"файл{filename}\nРаспознанный код:").pack()
     ttk.Label(root, text=predicted_text, font=("Arial", 12, "bold")).pack()
 
-    ttk.Label(root, text="Исправьте при необходимости:").pack()
+    ttk.Label(root, text="ESC остановит исправление всех изображений\nИсправьте при необходимости:").pack()
 
     entry_var = tk.StringVar(value=predicted_text)
     entry = ttk.Entry(root, textvariable=entry_var, width=30, font=("Arial", 12))
@@ -296,11 +303,97 @@ def manual_check(img, predicted_text):
 
     # Запускаем окно
     root.mainloop()
-
     return predicted_text
 
 
-def organize_files(input_folder, output_base, coords, debug=False, not_fix_wrong=False):
+def translit(name):
+    """
+    Транслитерация кириллицы в латиницу (упрощенная схема)
+    с использованием str.translate() для максимальной производительности
+
+    :param name: Исходный текст на кириллице
+    :return: Транслитерированный текст
+    """
+    # Словарь замены (кириллица -> латиница)
+    trans_dict = {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "yo",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "h",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "shch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+        "А": "A",
+        "Б": "B",
+        "В": "V",
+        "Г": "G",
+        "Д": "D",
+        "Е": "E",
+        "Ё": "Yo",
+        "Ж": "Zh",
+        "З": "Z",
+        "И": "I",
+        "Й": "Y",
+        "К": "K",
+        "Л": "L",
+        "М": "M",
+        "Н": "N",
+        "О": "O",
+        "П": "P",
+        "Р": "R",
+        "С": "S",
+        "Т": "T",
+        "У": "U",
+        "Ф": "F",
+        "Х": "H",
+        "Ц": "Ts",
+        "Ч": "Ch",
+        "Ш": "Sh",
+        "Щ": "Shch",
+        "Ъ": "",
+        "Ы": "Y",
+        "Ь": "",
+        "Э": "E",
+        "Ю": "Yu",
+        "Я": "Ya",
+    }
+
+    # Создаем таблицу перевода (для метода translate)
+    trans_table = str.maketrans(trans_dict)
+
+    # Применяем транслитерацию
+    return name.translate(trans_table)
+
+
+def organize_files(
+    input_folder, output_base, coords, copy=False, debug=False, not_fix_wrong=False
+):
     """Организация файлов по папкам"""
     os.makedirs(output_base, exist_ok=True)
 
@@ -313,53 +406,64 @@ def organize_files(input_folder, output_base, coords, debug=False, not_fix_wrong
         print("Нет файлов для обработки!")
         return
 
-    def process(files, debug=False):
+    def process(files, need_manual_check=False, debug=False):
         for file in files:
             orig_name = file
-            safe_name = file.encode("ascii", "ignore").decode("ascii")
-            prefix = "tmp-name"
+            safe_name = translit(file).encode("ascii", "ignore").decode("ascii")
+            prefix = "tmp-name_"
             try:
                 os.rename(
                     os.path.join(input_folder, file),
                     os.path.join(input_folder, prefix + safe_name),
                 )
-            except FileNotFoundError as e:
-                continue
+            except Exception as e:
+                if debug:
+                    print(e)
             file = prefix + safe_name
             file_path = os.path.join(input_folder, file)
-            code = process_image(file_path, coords, debug)
 
-            if code:
-                folder_name = ensure_valid_folder_name(code)
-                target_folder = os.path.join(output_base, folder_name)
-                os.makedirs(target_folder, exist_ok=True)
+            code = process_image(file_path, coords, orig_name, need_manual_check, debug)
 
-                # Копируем файл
-                shutil.copy2(file_path, target_folder)
-                print(f"{orig_name} → {folder_name}")
+            try:
+                target_folder = ""
+                if code:
+                    folder_name = ensure_valid_folder_name(code)
+                    target_folder = os.path.join(output_base, folder_name)
+                    os.makedirs(target_folder, exist_ok=True)
 
-            else:
-                print(f"Не удалось распознать код в файле {orig_name}")
+                    if copy:
+                        # Копируем файл
+                        shutil.copy2(file_path, target_folder)
+                    else:
+                        shutil.move(file_path, target_folder)
+                    print(f"{orig_name} → {folder_name}\\")
+
+                else:
+                    print(f"Не удалось распознать код в файле {orig_name}")
+            except Exception as e:
+                if debug:
+                    print(e)
             try:
                 os.rename(
                     os.path.join(input_folder, file),
                     os.path.join(input_folder, orig_name),
                 )
                 if debug:
-                    print(f"renamed back {file} to {orig_name}")
-                os.rename(
-                    os.path.join(target_folder, file),
-                    os.path.join(target_folder, orig_name),
-                )
+                    print(f"  renamed back {file} to {orig_name}")
+                if target_folder:
+                    os.rename(
+                        os.path.join(target_folder, file),
+                        os.path.join(target_folder, orig_name),
+                    )
                 if debug:
-                    print(f"renamed new {file} to {orig_name}")
+                    print(f"  renamed new {file} to {orig_name}")
             except Exception as e:
                 if debug:
                     print(e)
 
     process(files, debug)
     if not not_fix_wrong:
-        process(needed_manual_recognizing, debug=True)
+        process(needed_manual_recognizing, need_manual_check=True)
         needed_manual_recognizing.clear()
 
 
@@ -382,6 +486,11 @@ if __name__ == "__main__":
         "--h", type=int, default=DEFAULT_COORDS[3], help="Высота области с шифром"
     )
     parser.add_argument(
+        "--copy",
+        action="store_true",
+        help="Не перемещать, а копировать файлы",
+    )
+    parser.add_argument(
         "--not_fix_wrong",
         action="store_true",
         help="Не предлагать исправлять все неверно распознанные пока не разложатся все файлы",
@@ -402,6 +511,7 @@ if __name__ == "__main__":
         input_folder=args.input_folder,
         output_base=args.output_base,
         coords=(args.x, args.y, args.w, args.h),
+        copy=args.copy,
         debug=args.debug,
         not_fix_wrong=args.not_fix_wrong,
     )
