@@ -84,7 +84,7 @@ def preprocess_image(image):
     _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(thresh, -1, kernel)
-    clean = cv2.medianBlur(sharpened, 3)
+    clean = cv2.medianBlur(sharpened, 7)
     return clean
 
 
@@ -135,6 +135,7 @@ def correct_text(text):
         "D": "0",
         "S": "5",
     }
+    text = text.upper()
     if text:
         corrected = [
             (
@@ -145,7 +146,7 @@ def correct_text(text):
         ]
     else:
         return ""
-    for c in text.upper()[1:]:
+    for c in text[1:]:
         if c in correction_map_digits:
             corrected.append(correction_map_digits[c])
         elif c in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789":
@@ -204,67 +205,95 @@ def process_image(image_path, coords, orig_name, need_manual_check=False, debug=
         if need_manual_check:
             corrected_text = manual_check(processed, corrected_text, orig_name)
         else:
+            if debug:
+                print(corrected_text, file=open(f"{debug_dir}/{orig_name}.txt", "wt"))
             corrected_text = ""
-        if  orig_name not in needed_manual_recognizing:
-            needed_manual_recognizing.append(orig_name)
+        if (this_file := os.path.join(os.path.dirname(image_path), orig_name)) not in needed_manual_recognizing:
+            needed_manual_recognizing.append(this_file)
 
     return corrected_text if corrected_text else None
 
 
-def manual_check(img, predicted_text, filename="") -> str:
-    root = tk.Tk()
+def manual_check(img, predicted_text, filename=""):
+    troot = tk.Tk() # для использования Toplevel окон
+    troot.withdraw()  # Скрываем главное окно
+    root = tk.Toplevel()  # Используем Toplevel вместо Tk для дочерних окон
     root.title("Проверка распознавания")
-
-    # Конвертируем изображение OpenCV для Tkinter
+    
+    # Делаем окно модальным (но не блокирующим полностью)
+    root.grab_set()
+    root.focus_force()
+    
+    # Конвертируем изображение
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(img_rgb)
-
-    # Масштабируем изображение если слишком большое
+    
+    # Масштабирование
     max_width = 800
     if pil_image.width > max_width:
         ratio = max_width / pil_image.width
         new_height = int(pil_image.height * ratio)
         pil_image = pil_image.resize((max_width, new_height), Image.LANCZOS)
-
+    
     tk_image = ImageTk.PhotoImage(pil_image)
-
-    # Отображаем изображение
+    
+    # Отображение
     img_label = ttk.Label(root, image=tk_image)
+    img_label.image = tk_image  # Сохраняем ссылку!
     img_label.pack(pady=10)
-
+    
     # Текст и поле ввода
-    ttk.Label(root, text=f"файл{filename}\nРаспознанный код:").pack()
+    ttk.Label(root, text=f"Файл: {filename}\nРаспознанный код:").pack()
     ttk.Label(root, text=predicted_text, font=("Arial", 12, "bold")).pack()
-
-    ttk.Label(root, text="ESC остановит исправление всех изображений\nИсправьте при необходимости:").pack()
-
+    
+    ttk.Label(root, text="ESC - Выход из редактирования всех оставшихся").pack()
+    ttk.Label(root, text="Enter - подтвердить. Пустая строка для пропуска").pack()
+    
     entry_var = tk.StringVar(value=predicted_text)
     entry = ttk.Entry(root, textvariable=entry_var, width=30, font=("Arial", 12))
     entry.pack(pady=10)
-
-    # Функция подтверждения
+    
+    # Переменная для результата
+    result = [predicted_text]
+    
     def confirm():
-        nonlocal predicted_text
-        predicted_text = entry.get()
+        result[0] = entry.get()
+        troot.destroy()
         root.destroy()
-
-    # Кнопка подтверждения
-    btn = ttk.Button(root, text="Подтвердить (Enter)", command=confirm)
-    btn.pack(pady=10)
-
+    
+    def escape():
+        root.destroy()
+        troot.destroy()
+        sys.exit(0)
+    
+    # Кнопки
+    btn_frame = ttk.Frame(root)
+    btn_frame.pack(pady=10)
+    
+    ttk.Button(btn_frame, text="Подтвердить (Enter)", command=confirm).pack(side=tk.LEFT, padx=5)
+    ttk.Button(btn_frame, text="Выход (ESC)", command=escape).pack(side=tk.LEFT, padx=5)
+    
     # Настройка горячих клавиш
-    entry.bind("<Return>", lambda e: confirm())  # Enter в поле ввода
-    root.bind("<Return>", lambda e: confirm())  # Enter в любом месте окна
-    root.bind("<Escape>", lambda e: exit(1))  # Esc в любом месте окна
-
-    # Установка фокуса и выделение текста
-    entry.focus_set()
+    entry.bind("<Return>", lambda e: confirm())
+    root.bind("<Return>", lambda e: confirm())
+    root.bind("<Escape>", lambda e: escape())
+    
+    # Фокус и выделение текста
+    entry.focus_force()
     entry.select_range(0, tk.END)
-
-    # Запускаем окно
+    
+    # Центрирование окна
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    x = (root.winfo_screenwidth() // 2) - (width // 2)
+    y = (root.winfo_screenheight() // 2) - (height // 2)
+    root.geometry(f'+{x}+{y}')
+    
+    # Ждем закрытия окна
     root.mainloop()
-    return predicted_text
-
+    
+    return result[0]
 
 def translit(name):
     """
@@ -454,7 +483,7 @@ def organize_files(
                     print(e)
         return moved_files
 
-    res = (process(files, debug), len(needed_manual_recognizing))
+    res = (process(files, debug=debug), len(needed_manual_recognizing))
     if not not_fix_wrong:
         total_files = len(needed_manual_recognizing)
         process(needed_manual_recognizing, need_manual_check=True)
