@@ -434,7 +434,7 @@ def organize_files(
                         shutil.copy2(file_path, target_path)
                     else:
                         shutil.move(file_path, target_path)
-                    print(f"{orig_name} → {folder_name}\\")
+                    print(f"{orig_name} → {folder_name}\\            ")
                     moved_files += 1
 
                 else:
