@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import sys
 import shutil
 
 # import sys
@@ -21,7 +22,7 @@ from PIL import Image, ImageTk
 # Установите путь к tesseract.exe, если он не в PATH
 # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 # Настройки по умолчанию
 DEFAULT_COORDS = (1100, 0, 1200, 700)  # x, y, w, h
@@ -197,7 +198,9 @@ def process_image(image_path, coords, orig_name, need_manual_check=False, debug=
     # )
     corrected_text = correct_text(recognized_text)
     # corrected_text = recognized_text
-    if not re.match(r"^[А-Я]\d{4}$", corrected_text):
+    # if not re.match(r"^[А-Я]\d{4}$", corrected_text):
+    code = code[0] if (code := re.match(r"[А-Я]\d{4}", corrected_text)) else ""
+    if not code:
         if need_manual_check:
             corrected_text = manual_check(processed, corrected_text, orig_name)
         else:
@@ -206,49 +209,6 @@ def process_image(image_path, coords, orig_name, need_manual_check=False, debug=
             needed_manual_recognizing.append(orig_name)
 
     return corrected_text if corrected_text else None
-
-
-# def manual_check_plt(img, predicted_text):
-#     plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-#     plt.title(f"Распознано: {predicted_text}")
-#     plt.axis('off')
-#     t_box = plt.axes([0.4, 0.1, 0.5, 0.075])
-#     text_box = TextBox(t_box, 'Корректный:', initial=predicted_text)
-#     def update(_):
-#         nonlocal predicted_text
-#         predicted_text = text_box.text_disp._text
-#     text_box.on_text_change(update)
-#     def close(_):
-#         plt.close()
-#     text_box.on_submit(close)
-#     text_box.set_active(True)
-#     # Выделяем весь текст (если возможно)
-#     if hasattr(text_box, '_cursor'):
-#         text_box._cursor = 0
-#         text_box._selection_length = len(predicted_text)
-#     # Пытаемся установить фокус разными способами
-#     try:
-#         # Для Tkinter
-#         if 'Tk' in plt.get_backend():
-#             fig.canvas.manager.window.after(100, lambda: fig.canvas.manager.window.focus_force())
-#             fig.canvas.manager.window.after(150, lambda: text_box._textbox.focus_set())
-
-#         # Для Qt
-#         elif 'Qt' in plt.get_backend():
-#             fig.canvas.manager.window.activateWindow()
-#             fig.canvas.manager.window.raise_()
-#             text_box._textbox.setFocus()
-
-#         # Выделяем весь текст
-#         if hasattr(text_box, '_cursor'):
-#             text_box._cursor = 0
-#             text_box._selection_length = len(predicted_text)
-#     except:
-#         pass
-#     plt.show(block=True)
-#     # text_box.cursor_index = len(predicted_text)
-
-#     return predicted_text
 
 
 def manual_check(img, predicted_text, filename="") -> str:
@@ -391,36 +351,67 @@ def translit(name):
     return name.translate(trans_table)
 
 
+def find_image_files(input_folder, recursive=False, extensions=('png', 'jpg', 'jpeg', 'tif', 'bmp')):
+    """Находит все изображения в директории (рекурсивно при необходимости)"""
+    files = []
+    if recursive:
+        for root, _, filenames in os.walk(input_folder):
+            for filename in filenames:
+                if filename.lower().endswith(extensions):
+                    files.append(os.path.join(root, filename))
+    else:
+        files = [
+            os.path.join(input_folder, f) 
+            for f in os.listdir(input_folder) 
+            if f.lower().endswith(extensions)
+        ]
+    return files
+
+
+def print_progress(current, total, prefix='', suffix=''):
+    """
+    Выводит прогресс в процентах с возможностью обновления строки
+    :param current: текущее количество обработанных элементов
+    :param total: общее количество элементов
+    :param prefix: текст перед процентом
+    :param suffix: текст после процента
+    """
+    percent = 100 * (current / float(total))
+    # \r возвращает каретку в начало строки
+    # end='' предотвращает перенос строки
+    sys.stdout.write(f'\r{prefix}{percent:.1f}%{suffix}\r')
+    sys.stdout.flush()
+    if current == total:
+        print()  # перенос строки после завершения
+
+
 def organize_files(
-    input_folder, output_base, coords, copy=False, debug=False, not_fix_wrong=False
+    input_folder, output_base, coords, copy=False, debug=False, not_fix_wrong=False, recursive=False
 ):
-    """Организация файлов по папкам"""
+    """Организация файлов по папкам с поддержкой рекурсивного обхода"""
     os.makedirs(output_base, exist_ok=True)
-
-    supported_extensions = ("png", "jpg", "jpeg", "tif", "bmp")
-    files = [
-        f for f in os.listdir(input_folder) if f.lower().endswith(supported_extensions)
-    ]
-
+    
+    files = find_image_files(input_folder, recursive)
+    total_files = len(files)
     if not files:
         print("Нет файлов для обработки!")
         return
 
     def process(files, need_manual_check=False, debug=False):
-        for file in files:
-            orig_name = file
-            safe_name = translit(file).encode("ascii", "ignore").decode("ascii")
+        moved_files = 0
+        for i, file_path in enumerate(files):
+            print_progress(i, total_files, prefix='Обработка файлов: ')
+            orig_name = os.path.basename(file_path)
+            safe_name = translit(orig_name).encode("ascii", "ignore").decode("ascii")
             prefix = "tmp-name_"
+            
             try:
-                os.rename(
-                    os.path.join(input_folder, file),
-                    os.path.join(input_folder, prefix + safe_name),
-                )
+                new_path = os.path.join(os.path.dirname(file_path), prefix + safe_name)
+                os.rename(file_path, new_path)
+                file_path = new_path
             except Exception as e:
                 if debug:
                     print(e)
-            file = prefix + safe_name
-            file_path = os.path.join(input_folder, file)
 
             code = process_image(file_path, coords, orig_name, need_manual_check, debug)
 
@@ -431,74 +422,90 @@ def organize_files(
                     target_folder = os.path.join(output_base, folder_name)
                     os.makedirs(target_folder, exist_ok=True)
 
-                    if copy:
-                        # Копируем файл
-                        shutil.copy2(file_path, target_folder)
+                    # Сохраняем структуру поддиректорий при рекурсивном обходе
+                    if recursive:
+                        rel_path = os.path.relpath(file_path, input_folder)
+                        target_path = os.path.join(target_folder, rel_path)
+                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     else:
-                        shutil.move(file_path, target_folder)
+                        target_path = os.path.join(target_folder, orig_name)
+
+                    if copy:
+                        shutil.copy2(file_path, target_path)
+                    else:
+                        shutil.move(file_path, target_path)
                     print(f"{orig_name} → {folder_name}\\")
+                    moved_files += 1
 
                 else:
                     print(f"Не удалось распознать код в файле {orig_name}")
             except Exception as e:
                 if debug:
                     print(e)
+            
             try:
-                os.rename(
-                    os.path.join(input_folder, file),
-                    os.path.join(input_folder, orig_name),
-                )
-                if debug:
-                    print(f"  renamed back {file} to {orig_name}")
-                if target_folder:
-                    os.rename(
-                        os.path.join(target_folder, file),
-                        os.path.join(target_folder, orig_name),
-                    )
-                if debug:
-                    print(f"  renamed new {file} to {orig_name}")
+                # Возвращаем оригинальное имя
+                if os.path.exists(file_path):
+                    os.rename(file_path, os.path.join(os.path.dirname(file_path), orig_name))
+                if target_folder and os.path.exists(target_path):
+                    os.rename(target_path, os.path.join(os.path.dirname(target_path), orig_name))
             except Exception as e:
                 if debug:
                     print(e)
+        return moved_files
 
-    process(files, debug)
+    res = (process(files, debug), len(needed_manual_recognizing))
     if not not_fix_wrong:
+        total_files = len(needed_manual_recognizing)
         process(needed_manual_recognizing, need_manual_check=True)
         needed_manual_recognizing.clear()
+    return res
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Программа для автоматической сортировки сканов по распознанным рукописным шифрам"
+        description="Программа для автоматической сортировки сканов по распознанным печатным шифрам в рамке",
+        add_help=False
     )
     parser.add_argument("input_folder", help="Папка с исходными изображениями")
     parser.add_argument("output_base", help="Базовая папка для сортировки результатов")
     parser.add_argument(
-        "--x", type=int, default=DEFAULT_COORDS[0], help="X координата области с шифром"
+        "-x", "--x0", type=int, default=DEFAULT_COORDS[0], help="X координата области с шифром"
     )
     parser.add_argument(
-        "--y", type=int, default=DEFAULT_COORDS[1], help="Y координата области с шифром"
+        "-y", "--y0", type=int, default=DEFAULT_COORDS[1], help="Y координата области с шифром"
     )
     parser.add_argument(
-        "--w", type=int, default=DEFAULT_COORDS[2], help="Ширина области с шифром"
+        "-w", "--width", type=int, default=DEFAULT_COORDS[2], help="Ширина области с шифром"
     )
     parser.add_argument(
-        "--h", type=int, default=DEFAULT_COORDS[3], help="Высота области с шифром"
+        "-h" , "--heigh", type=int, default=DEFAULT_COORDS[3], help="Высота области с шифром"
     )
     parser.add_argument(
-        "--copy",
+        "-c", "--copy",
         action="store_true",
         help="Не перемещать, а копировать файлы",
     )
     parser.add_argument(
-        "--not_fix_wrong",
+        "-r", "--recursive",
+        action="store_true",
+        help="Рекурсивный обход поддиректорий, в output_base будет аналогичная иерархия",
+    )
+    parser.add_argument(
+        "-n", "--not_fix_wrong",
         action="store_true",
         help="Не предлагать исправлять все неверно распознанные пока не разложатся все файлы",
     )
     parser.add_argument(
-        "--debug",
+        "-d", "--debug",
         action="store_true",
         help="Сохранять промежуточные изображения для отладки",
+    )
+    parser.add_argument(
+        "-?", "--help", 
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Показать это сообщение и выйти"
     )
 
     args = parser.parse_args()
@@ -507,11 +514,13 @@ if __name__ == "__main__":
         print(f"Ошибка: папка {args.input_folder} не существует!")
         exit(1)
 
-    organize_files(
+    rec, unrec = organize_files(
         input_folder=args.input_folder,
         output_base=args.output_base,
-        coords=(args.x, args.y, args.w, args.h),
+        coords=(args.x0, args.y0, args.width, args.heigh),
         copy=args.copy,
+        recursive=args.recursive,
         debug=args.debug,
         not_fix_wrong=args.not_fix_wrong,
     )
+    print(f"Распознано {rec} кодов, не распознано - {unrec}")
