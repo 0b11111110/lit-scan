@@ -38,6 +38,90 @@ needed_manual_recognizing = []  # для не распознанных
 # enable_unicode_windows()
 
 
+def translit(name):
+    """
+    Транслитерация кириллицы в латиницу (упрощенная схема)
+    с использованием str.translate() для максимальной производительности
+
+    :param name: Исходный текст на кириллице
+    :return: Транслитерированный текст
+    """
+    # Словарь замены (кириллица -> латиница)
+    trans_dict = {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "yo",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "h",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "shch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+        "А": "A",
+        "Б": "B",
+        "В": "V",
+        "Г": "G",
+        "Д": "D",
+        "Е": "E",
+        "Ё": "Yo",
+        "Ж": "Zh",
+        "З": "Z",
+        "И": "I",
+        "Й": "Y",
+        "К": "K",
+        "Л": "L",
+        "М": "M",
+        "Н": "N",
+        "О": "O",
+        "П": "P",
+        "Р": "R",
+        "С": "S",
+        "Т": "T",
+        "У": "U",
+        "Ф": "F",
+        "Х": "H",
+        "Ц": "Ts",
+        "Ч": "Ch",
+        "Ш": "Sh",
+        "Щ": "Shch",
+        "Ъ": "",
+        "Ы": "Y",
+        "Ь": "",
+        "Э": "E",
+        "Ю": "Yu",
+        "Я": "Ya",
+    }
+
+    # Создаем таблицу перевода (для метода translate)
+    trans_table = str.maketrans(trans_dict)
+
+    # Применяем транслитерацию
+    return name.translate(trans_table)
+
 def ensure_valid_folder_name(name):
     """Заменяет запрещённые символы в именах папок"""
     invalid_chars = '<>:"/\\|?*'
@@ -94,11 +178,35 @@ def find_text_contour(image):
     return None
 
 
-def crop_to_contour(image, contour):
-    """Обрезает изображение по найденному контуру"""
-    rect = cv2.boundingRect(contour)
-    x, y, w, h = rect
-    cropped = image[y : y + h, x : x + w]
+def crop_to_contour(image, contour, padding=10):
+    """
+    Обрезает изображение по контуру, убирая рамку.
+    
+    Args:
+        image: Исходное изображение.
+        contour: Найденный контур рамки.
+        padding: Отступ внутрь от границ рамки (в пикселях).
+    
+    Returns:
+        Обрезанное изображение без рамки.
+    """
+    # Получаем координаты рамки
+    x, y, w, h = cv2.boundingRect(contour)
+    
+    # Уменьшаем область обрезки (сдвигаем внутрь)
+    x += padding
+    y += padding
+    w -= 2 * padding  # Уменьшаем ширину с двух сторон
+    h -= 2 * padding  # Уменьшаем высоту с двух сторон
+    
+    # Проверяем, чтобы новые координаты не вышли за границы
+    x = max(x, 0)
+    y = max(y, 0)
+    w = min(w, image.shape[1] - x)
+    h = min(h, image.shape[0] - y)
+    
+    # Обрезаем изображение
+    cropped = image[y:y+h, x:x+w]
     return cropped
 
 
@@ -114,54 +222,209 @@ def old_preprocess_image(image):
     clean = cv2.medianBlur(sharpened, 7)
     return clean
 
-def preprocess_image(image):
-    """Улучшение изображения с учетом клетчатого фона"""
-    # Конвертация в grayscale
+def ext_preprocess_image(image):
+    """Финальная обработка с сохранением толстых рамок и текста"""
+    # 1. Подготовка изображения
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Удаление клетчатого фона с помощью адаптивного порога
-    binary = cv2.adaptiveThreshold(gray, 255, 
+    # 2. Улучшение контраста (CLAHE лучше работает для текста)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    
+    # 3. Адаптивная бинаризация (сохраняет толстые линии)
+    binary = cv2.adaptiveThreshold(enhanced, 255,
                                  cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                 cv2.THRESH_BINARY_INV, 11, 7)
+                                 cv2.THRESH_BINARY,
+                                 21, 5)  # Увеличиваем размер блока для сохранения толстых линий
     
-    # Удаление мелких шумов
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    # 4. Морфологические операции для сохранения толстых элементов
+    kernel_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
     
-    # Увеличение контраста текста
-    enhanced = cv2.dilate(cleaned, kernel, iterations=1)
+    # 5. Удаление мелкого шума без удаления толстых линий
+    denoised = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_clean, iterations=1)
     
-    return enhanced
+    # 6. Усиление толстых линий
+    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+    enhanced_lines = cv2.dilate(denoised, kernel_dilate, iterations=1)
+    
+    return enhanced_lines
 
 
-def deskew_image(image):
-    """Выравнивает наклоненный текст"""
+def preprocess_image(image):
+    """Альтернативный вариант с выделением толстых линий"""
+    # 1. Конвертация в grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # 2. Размытие для уменьшения шума
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # 3. Детекция толстых линий (используем threshold вместо adaptiveThreshold)
+    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # 4. Находим только толстые линии (удаляем мелкие элементы)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7,7))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    
+    # 5. Инвертируем обратно
+    result = cv2.bitwise_not(closed)
+    
+    return result
+
+
+def deskew_image(image, max_angle=20):
+    """Выравнивает наклоненный текст, не превышая максимальный угол поворота"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.bitwise_not(gray)
     
     # Определяем угол наклона
     coords = np.column_stack(np.where(gray > 0))
-    angle = cv2.minAreaRect(coords)[-1]
+    rect = cv2.minAreaRect(coords)
+    angle = rect[-1]
     
+    # Корректируем угол в зависимости от ориентации
     if angle < -45:
         angle = -(90 + angle)
     else:
         angle = -angle
+    
+    # Если угол превышает максимальный - оставляем максимальный с сохранением направления
+    if abs(angle) > max_angle:
+        angle = max_angle if angle > 0 else -max_angle
+    
+    # Не поворачиваем если угол меньше 1 градуса
+    if abs(angle) < 1.0:
+        return image.copy()
     
     # Поворачиваем изображение
     (h, w) = image.shape[:2]
     center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
     rotated = cv2.warpAffine(image, M, (w, h),
-                            flags=cv2.INTER_CUBIC,
-                            borderMode=cv2.BORDER_REPLICATE)
+                          flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_REPLICATE)
     return rotated
+
+
+def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=False):
+    """
+    Универсальная функция выравнивания, работающая с UMat и numpy.ndarray
+    Возвращает (выровненное изображение, угол поворота) или (None, 0) при ошибке
+    """
+    # 1. Проверка и нормализация входных данных
+    try:
+        # Конвертируем в numpy array если это UMat
+        if isinstance(cropped_img, cv2.UMat):
+            img_np = cropped_img.get()
+        else:
+            img_np = np.asarray(cropped_img)
+            
+        # Проверка на пустое изображение
+        if img_np.size == 0:
+            print("Ошибка: пустое изображение")
+            return None, 0
+            
+        # Приведение к uint8 если нужно
+        if img_np.dtype != np.uint8:
+            img_np = img_np.astype(np.uint8)
+            
+    except Exception as e:
+        print(f"Ошибка подготовки изображения: {str(e)}")
+        return None, 0
+
+    # 2. Подготовка grayscale изображения
+    try:
+        if len(img_np.shape) == 2:
+            gray = img_np
+        elif len(img_np.shape) == 3 and img_np.shape[2] == 3:
+            gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+        else:
+            print("Ошибка: неподдерживаемый формат изображения")
+            return None, 0
+    except Exception as e:
+        print(f"Ошибка конвертации в grayscale: {str(e)}")
+        return None, 0
+
+    # 3. Основная обработка (работаем только с numpy)
+    try:
+        # Размытие
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        # blurred = cv2.medianBlur(gray, 5)  # Лучше для шумных изображений
+        
+        # Детекция границ
+        edges = cv2.Canny(blurred, 70, 180)
+        
+        # Усиление контуров
+        kernel = np.ones((frame_thickness, frame_thickness), np.uint8)
+        dilated = cv2.dilate(edges, kernel, iterations=1)
+        
+        # Поиск контуров
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            if debug: print("Контуры не найдены")
+            return img_np.copy(), 0.0
+        
+        # Расчет угла поворота
+        angles = []
+        for cnt in contours:
+            rect = cv2.minAreaRect(cnt)
+            angle = rect[-1]
+            angles.append(angle if angle < -45 else angle - 90)
+        
+        if not angles:
+            return img_np.copy(), 0.0
+            
+        median_angle = np.median(angles)
+        final_angle = max(-max_angle, min(max_angle, median_angle))
+        
+        if abs(final_angle) < 0.1:
+            if debug: print(f"Угол слишком мал: {final_angle:.2f}°")
+            return img_np.copy(), 0.0
+        
+        # Поворот изображения
+        h, w = img_np.shape[:2]
+        M = cv2.getRotationMatrix2D((w//2, h//2), final_angle, 1.0)
+        rotated = cv2.warpAffine(img_np, M, (w, h),
+                               flags=cv2.INTER_CUBIC,
+                               borderMode=cv2.BORDER_REPLICATE)
+        
+        return rotated, final_angle
+        
+    except Exception as e:
+        print(f"Ошибка обработки изображения: {str(e)}")
+        return None, 0
+
 
 # def recognize_with_easyocr(image):
 #     """Распознавание с помощью EasyOCR"""
 #     reader = easyocr.Reader(["ru"])
 #     result = reader.readtext(image, detail=0)
 #     return "".join(result).upper()
+
+
+def resize_and_invert(image, target_height=200):
+    """
+    Уменьшает изображение до 200px в высоту (с пропорциями) и инвертирует цвета.
+    
+    Args:
+        image (numpy.ndarray): Входное изображение (BGR или Grayscale).
+        target_height (int): Желаемая высота (по умолчанию 200px).
+    
+    Returns:
+        numpy.ndarray: Уменьшенное и инвертированное изображение.
+    """
+    # Получаем текущие размеры
+    h, w = image.shape[:2]
+    
+    # Рассчитываем новый размер с сохранением пропорций
+    ratio = target_height / h
+    new_width = int(w * ratio)
+    resized = cv2.resize(image, (new_width, target_height), interpolation=cv2.INTER_AREA)
+    
+    # Инвертируем цвета (чтобы текст был черным на белом фоне)
+    inverted = cv2.bitwise_not(resized)
+    
+    return inverted
 
 
 def recognize_with_tesseract(image):
@@ -346,6 +609,10 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
     # Вырезаем область интереса
     roi = img[y : y + h, x : x + w]
 
+    # Выравниваем наклон при необходимости
+    # roi = deskew_image(roi, max_angle=5)
+    roi, _ = deskew_image_by_frame(roi, max_angle=5, frame_thickness=8)
+
     if debug:
         debug_dir = "ocr_debug"
         os.makedirs(debug_dir, exist_ok=True)
@@ -353,6 +620,10 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
 
     # Предварительная обработка
     processed = preprocess_image(roi)
+    if debug:
+        debug_dir = "ocr_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(f"{debug_dir}/{orig_name}_preprocessed.png", processed)
 
     # Находим контур текста
     contour = find_text_contour(processed)
@@ -365,16 +636,24 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
     else:
         cropped = roi  # Если контур не найден, используем всю область
 
-    recognized_text = recognize_with_tesseract(cropped)
-    corrected_text = correct_text(recognized_text)
-    code = code[0] if (code := re.match(r"[А-Я]\d{4}", corrected_text)) else ""
+    code, size = "", 70
+    while not code and size > 20:
+        size -= 20
+        resized = resize_and_invert(cropped, target_height=size)
+        if debug:
+            debug_dir = "ocr_debug"
+            os.makedirs(debug_dir, exist_ok=True)
+            cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
+        recognized_text = recognize_with_tesseract(resized)
+        corrected_text = correct_text(recognized_text)
+        code = code[0] if (code := re.match(r"[А-Я]\d{4}", corrected_text)) else ""
 
     if not code:
         if need_manual_check:
             corrected_text = manual_check(roi, corrected_text, orig_name)
         else:
             if debug:
-                print(corrected_text, file=open(f"{debug_dir}/{orig_name}.txt", "wt"))
+                print(corrected_text, file=open(f"{debug_dir}/{orig_name}.txt", "wt", encoding='utf-8'))
             corrected_text = ""
         if file_path not in needed_manual_recognizing:
             needed_manual_recognizing.append(file_path)
@@ -403,12 +682,16 @@ def organize_files(
             orig_name = os.path.basename(file_path)
             
             try:
+                base_dir = os.path.dirname(file_path)
+                tmp_name = os.path.join(base_dir, translit(orig_name))
+                os.rename(file_path, tmp_name) # cv2 плохо с виндовой кирилицей
                 # Загружаем изображение
-                img = cv2.imread(file_path)
+                img = cv2.imread(tmp_name)
+                os.rename(tmp_name, file_path)
                 if img is None:
                     print(f"Ошибка загрузки: {file_path}")
                     continue
-                
+
                 # Обработка изображения
                 code = process_image_from_memory(img, coords, orig_name, file_path, need_manual_check, debug)
 
@@ -423,7 +706,7 @@ def organize_files(
                     else:
                         shutil.move(file_path, target_path)
                     
-                    print(f"{orig_name} → {folder_name}\\")
+                    print(f"{orig_name} → {folder_name}\\          ")
                     moved_files += 1
                     
             except Exception as e:
