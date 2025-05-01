@@ -46,7 +46,7 @@ def ensure_valid_folder_name(name):
     return name.strip()
 
 
-def find_text_contour(image):
+def old_find_text_contour(image):
     """Находит прямоугольный контур вокруг текста"""
     # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(image, (5, 5), 0)
@@ -67,6 +67,33 @@ def find_text_contour(image):
     return None
 
 
+def find_text_contour(image):
+    """Находит прямоугольный контур вокруг текста с учетом рамки"""
+    # Улучшенная бинаризация
+    blurred = cv2.GaussianBlur(image, (5, 5), 0)
+    edged = cv2.Canny(blurred, 50, 150)
+    
+    # Увеличение контуров
+    kernel = np.ones((3, 3), np.uint8)
+    dilated = cv2.dilate(edged, kernel, iterations=2)
+    
+    contours, _ = cv2.findContours(dilated.copy(), 
+                                 cv2.RETR_EXTERNAL, 
+                                 cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Фильтрация контуров по площади и форме
+    min_area = 500  # Минимальная площадь контура
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+        peri = cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+        
+        # Проверяем, что контур прямоугольный и достаточно большой
+        if len(approx) == 4 and cv2.contourArea(contour) > min_area:
+            return approx
+    
+    return None
+
+
 def crop_to_contour(image, contour):
     """Обрезает изображение по найденному контуру"""
     rect = cv2.boundingRect(contour)
@@ -75,7 +102,7 @@ def crop_to_contour(image, contour):
     return cropped
 
 
-def preprocess_image(image):
+def old_preprocess_image(image):
     """Улучшение изображения перед распознаванием"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -87,6 +114,48 @@ def preprocess_image(image):
     clean = cv2.medianBlur(sharpened, 7)
     return clean
 
+def preprocess_image(image):
+    """Улучшение изображения с учетом клетчатого фона"""
+    # Конвертация в grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Удаление клетчатого фона с помощью адаптивного порога
+    binary = cv2.adaptiveThreshold(gray, 255, 
+                                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                 cv2.THRESH_BINARY_INV, 11, 7)
+    
+    # Удаление мелких шумов
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    # Увеличение контраста текста
+    enhanced = cv2.dilate(cleaned, kernel, iterations=1)
+    
+    return enhanced
+
+
+def deskew_image(image):
+    """Выравнивает наклоненный текст"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bitwise_not(gray)
+    
+    # Определяем угол наклона
+    coords = np.column_stack(np.where(gray > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+    
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+    
+    # Поворачиваем изображение
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h),
+                            flags=cv2.INTER_CUBIC,
+                            borderMode=cv2.BORDER_REPLICATE)
+    return rotated
 
 # def recognize_with_easyocr(image):
 #     """Распознавание с помощью EasyOCR"""
@@ -154,66 +223,6 @@ def correct_text(text):
     return "".join(corrected)
 
 
-def process_image(image_path, coords, orig_name, need_manual_check=False, debug=False):
-    """Основная функция обработки изображения"""
-    x, y, w, h = coords
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"Ошибка загрузки: {image_path}")
-        return None
-
-    # Вырезаем область интереса
-    roi = img[y : y + h, x : x + w]
-
-    # base_name = os.path.splitext(os.path.basename(image_path))[0]
-    if debug:
-        debug_dir = "ocr_debug"
-        os.makedirs(debug_dir, exist_ok=True)
-        cv2.imwrite(f"{debug_dir}/{orig_name}_roi.png", roi)
-
-    # Предварительная обработка
-    processed = preprocess_image(roi)
-
-    # Находим контур текста
-    contour = find_text_contour(processed)
-
-    if contour is not None:
-        # Обрезаем по контуру
-        cropped = crop_to_contour(processed, contour)
-
-        if debug:
-            cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
-    else:
-        cropped = roi  # Если контур не найден, используем всю область
-
-    # if debug:
-    #     cv2.imwrite(f"{debug_dir}/{base_name}_processed.png", processed)
-
-    # не# Комбинированное распознавание
-    # text_easyocr = recognize_with_easyocr(cropped)
-    text_tesseract = recognize_with_tesseract(cropped)
-
-    # Выбираем лучший результат
-    recognized_text = text_tesseract  # (
-    #     text_easyocr if len(text_easyocr) > len(text_tesseract) else text_tesseract
-    # )
-    corrected_text = correct_text(recognized_text)
-    # corrected_text = recognized_text
-    # if not re.match(r"^[А-Я]\d{4}$", corrected_text):
-    code = code[0] if (code := re.match(r"[А-Я]\d{4}", corrected_text)) else ""
-    if not code:
-        if need_manual_check:
-            corrected_text = manual_check(processed, corrected_text, orig_name)
-        else:
-            if debug:
-                print(corrected_text, file=open(f"{debug_dir}/{orig_name}.txt", "wt"))
-            corrected_text = ""
-        if (this_file := os.path.join(os.path.dirname(image_path), orig_name)) not in needed_manual_recognizing:
-            needed_manual_recognizing.append(this_file)
-
-    return corrected_text if corrected_text else None
-
-
 def manual_check(img, predicted_text, filename=""):
     troot = tk.Tk() # для использования Toplevel окон
     troot.withdraw()  # Скрываем главное окно
@@ -258,8 +267,8 @@ def manual_check(img, predicted_text, filename=""):
     
     def confirm():
         result[0] = entry.get()
-        troot.destroy()
-        root.destroy()
+        troot.quit()
+        root.quit()
     
     def escape():
         root.destroy()
@@ -294,90 +303,6 @@ def manual_check(img, predicted_text, filename=""):
     root.mainloop()
     
     return result[0]
-
-def translit(name):
-    """
-    Транслитерация кириллицы в латиницу (упрощенная схема)
-    с использованием str.translate() для максимальной производительности
-
-    :param name: Исходный текст на кириллице
-    :return: Транслитерированный текст
-    """
-    # Словарь замены (кириллица -> латиница)
-    trans_dict = {
-        "а": "a",
-        "б": "b",
-        "в": "v",
-        "г": "g",
-        "д": "d",
-        "е": "e",
-        "ё": "yo",
-        "ж": "zh",
-        "з": "z",
-        "и": "i",
-        "й": "y",
-        "к": "k",
-        "л": "l",
-        "м": "m",
-        "н": "n",
-        "о": "o",
-        "п": "p",
-        "р": "r",
-        "с": "s",
-        "т": "t",
-        "у": "u",
-        "ф": "f",
-        "х": "h",
-        "ц": "ts",
-        "ч": "ch",
-        "ш": "sh",
-        "щ": "shch",
-        "ъ": "",
-        "ы": "y",
-        "ь": "",
-        "э": "e",
-        "ю": "yu",
-        "я": "ya",
-        "А": "A",
-        "Б": "B",
-        "В": "V",
-        "Г": "G",
-        "Д": "D",
-        "Е": "E",
-        "Ё": "Yo",
-        "Ж": "Zh",
-        "З": "Z",
-        "И": "I",
-        "Й": "Y",
-        "К": "K",
-        "Л": "L",
-        "М": "M",
-        "Н": "N",
-        "О": "O",
-        "П": "P",
-        "Р": "R",
-        "С": "S",
-        "Т": "T",
-        "У": "U",
-        "Ф": "F",
-        "Х": "H",
-        "Ц": "Ts",
-        "Ч": "Ch",
-        "Ш": "Sh",
-        "Щ": "Shch",
-        "Ъ": "",
-        "Ы": "Y",
-        "Ь": "",
-        "Э": "E",
-        "Ю": "Yu",
-        "Я": "Ya",
-    }
-
-    # Создаем таблицу перевода (для метода translate)
-    trans_table = str.maketrans(trans_dict)
-
-    # Применяем транслитерацию
-    return name.translate(trans_table)
 
 
 def find_image_files(input_folder, recursive=False, extensions=('png', 'jpg', 'jpeg', 'tif', 'bmp')):
@@ -414,6 +339,49 @@ def print_progress(current, total, prefix='', suffix=''):
         print()  # перенос строки после завершения
 
 
+def process_image_from_memory(img, coords, orig_name, file_path, need_manual_check=False, debug=False):
+    """Обработка изображения из памяти"""
+    x, y, w, h = coords
+    
+    # Вырезаем область интереса
+    roi = img[y : y + h, x : x + w]
+
+    if debug:
+        debug_dir = "ocr_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(f"{debug_dir}/{orig_name}_roi.png", roi)
+
+    # Предварительная обработка
+    processed = preprocess_image(roi)
+
+    # Находим контур текста
+    contour = find_text_contour(processed)
+
+    if contour is not None:
+        # Обрезаем по контуру
+        cropped = crop_to_contour(processed, contour)
+        if debug:
+            cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
+    else:
+        cropped = roi  # Если контур не найден, используем всю область
+
+    recognized_text = recognize_with_tesseract(cropped)
+    corrected_text = correct_text(recognized_text)
+    code = code[0] if (code := re.match(r"[А-Я]\d{4}", corrected_text)) else ""
+
+    if not code:
+        if need_manual_check:
+            corrected_text = manual_check(roi, corrected_text, orig_name)
+        else:
+            if debug:
+                print(corrected_text, file=open(f"{debug_dir}/{orig_name}.txt", "wt"))
+            corrected_text = ""
+        if file_path not in needed_manual_recognizing:
+            needed_manual_recognizing.append(file_path)
+
+    return corrected_text if corrected_text else None
+
+
 def organize_files(
     input_folder, output_base, coords, copy=False, debug=False, not_fix_wrong=False, recursive=False
 ):
@@ -424,71 +392,58 @@ def organize_files(
     total_files = len(files)
     if not files:
         print("Нет файлов для обработки!")
-        return
+        return (0, 0)
 
     def process(files, need_manual_check=False, debug=False):
         moved_files = 0
         for i, file_path in enumerate(files):
             print_progress(i, total_files, prefix='Обработка файлов: ')
+            
+            # Получаем оригинальное имя файла
             orig_name = os.path.basename(file_path)
-            safe_name = translit(orig_name).encode("ascii", "ignore").decode("ascii")
-            prefix = "tmp-name_"
             
             try:
-                new_path = os.path.join(os.path.dirname(file_path), prefix + safe_name)
-                os.rename(file_path, new_path)
-                file_path = new_path
-            except Exception as e:
-                if debug:
-                    print(e)
+                # Загружаем изображение
+                img = cv2.imread(file_path)
+                if img is None:
+                    print(f"Ошибка загрузки: {file_path}")
+                    continue
+                
+                # Обработка изображения
+                code = process_image_from_memory(img, coords, orig_name, file_path, need_manual_check, debug)
 
-            code = process_image(file_path, coords, orig_name, need_manual_check, debug)
-
-            try:
-                target_folder = ""
                 if code:
                     folder_name = ensure_valid_folder_name(code)
                     target_folder = os.path.join(output_base, folder_name)
                     os.makedirs(target_folder, exist_ok=True)
-
-                    # Сохраняем структуру поддиректорий при рекурсивном обходе
-                    if recursive:
-                        rel_path = os.path.relpath(file_path, input_folder)
-                        target_path = os.path.join(target_folder, rel_path)
-                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                    else:
-                        target_path = os.path.join(target_folder, orig_name)
-
+                    target_path = os.path.join(target_folder, orig_name)
+                    
                     if copy:
                         shutil.copy2(file_path, target_path)
                     else:
                         shutil.move(file_path, target_path)
-                    print(f"{orig_name} → {folder_name}\\            ")
+                    
+                    print(f"{orig_name} → {folder_name}\\")
                     moved_files += 1
-
-                else:
-                    print(f"Не удалось распознать код в файле {orig_name}")
+                    
             except Exception as e:
                 if debug:
-                    print(e)
-            
-            try:
-                # Возвращаем оригинальное имя
-                if os.path.exists(file_path):
-                    os.rename(file_path, os.path.join(os.path.dirname(file_path), orig_name))
-                if target_folder and os.path.exists(target_path):
-                    os.rename(target_path, os.path.join(os.path.dirname(target_path), orig_name))
-            except Exception as e:
-                if debug:
-                    print(e)
+                    print(f"Ошибка обработки {file_path}: {str(e)}")
+                    
         return moved_files
-
-    res = (process(files, debug=debug), len(needed_manual_recognizing))
-    if not not_fix_wrong:
-        total_files = len(needed_manual_recognizing)
-        process(needed_manual_recognizing, need_manual_check=True)
+    
+    # Первый проход - автоматическое распознавание
+    rec = process(files, debug=debug)
+    unrec = len(needed_manual_recognizing)
+    
+    # Второй проход - ручная проверка нераспознанных
+    if not not_fix_wrong and needed_manual_recognizing:
+        print(f"\nНачинаем ручную проверку {unrec} нераспознанных файлов")
+        manual_files = needed_manual_recognizing.copy()
         needed_manual_recognizing.clear()
-    return res
+        rec += process(manual_files, need_manual_check=True, debug=debug)
+    
+    return (rec, unrec)
 
 
 if __name__ == "__main__":
