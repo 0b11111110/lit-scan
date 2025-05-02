@@ -305,7 +305,7 @@ def deskew_image(image, max_angle=20):
     return rotated
 
 
-def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=False):
+def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, quiet=False, silent=False, debug=False):
     """
     Универсальная функция выравнивания, работающая с UMat и numpy.ndarray
     Возвращает (выровненное изображение, угол поворота) или (None, 0) при ошибке
@@ -320,7 +320,8 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=F
             
         # Проверка на пустое изображение
         if img_np.size == 0:
-            print("Ошибка: пустое изображение")
+            if not quiet and not silent:
+                print("Ошибка: пустое изображение") 
             return None, 0
             
         # Приведение к uint8 если нужно
@@ -328,7 +329,8 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=F
             img_np = img_np.astype(np.uint8)
             
     except Exception as e:
-        print(f"Ошибка подготовки изображения: {str(e)}")
+        if debug:
+            print(f"Ошибка подготовки изображения: {str(e)}")
         return None, 0
 
     # 2. Подготовка grayscale изображения
@@ -338,10 +340,12 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=F
         elif len(img_np.shape) == 3 and img_np.shape[2] == 3:
             gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
         else:
-            print("Ошибка: неподдерживаемый формат изображения")
+            if not quiet and not silent:
+                print("Ошибка: неподдерживаемый формат изображения")
             return None, 0
     except Exception as e:
-        print(f"Ошибка конвертации в grayscale: {str(e)}")
+        if debug:
+            print(f"Ошибка конвертации в grayscale: {str(e)}")
         return None, 0
 
     # 3. Основная обработка (работаем только с numpy)
@@ -377,7 +381,7 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=F
         median_angle = np.median(angles)
         final_angle = max(-max_angle, min(max_angle, median_angle))
         
-        if abs(final_angle) < 0.1:
+        if abs(final_angle) < 0.5:
             if debug: print(f"Угол слишком мал: {final_angle:.2f}°")
             return img_np.copy(), 0.0
         
@@ -391,7 +395,7 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, debug=F
         return rotated, final_angle
         
     except Exception as e:
-        print(f"Ошибка обработки изображения: {str(e)}")
+        if debug: print(f"Ошибка обработки изображения: {str(e)}")
         return None, 0
 
 
@@ -585,7 +589,7 @@ def find_image_files(input_folder, recursive=False, extensions=('png', 'jpg', 'j
     return files
 
 
-def print_progress(current, total, prefix='', suffix=''):
+def print_progress(current, total, prefix='', suffix='', silent=False):
     """
     Выводит прогресс в процентах с возможностью обновления строки
     :param current: текущее количество обработанных элементов
@@ -593,10 +597,11 @@ def print_progress(current, total, prefix='', suffix=''):
     :param prefix: текст перед процентом
     :param suffix: текст после процента
     """
+    if silent: return
     percent = 100 * (current / float(total))
     # \r возвращает каретку в начало строки
     # end='' предотвращает перенос строки
-    sys.stdout.write(f'\r{prefix}{percent:.1f}%{suffix}\r')
+    sys.stdout.write(f'\r{prefix}{percent:.1f}% ({current}/{total}){suffix}\r')
     sys.stdout.flush()
     if current == total:
         print()  # перенос строки после завершения
@@ -636,9 +641,9 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
     else:
         cropped = roi  # Если контур не найден, используем всю область
 
-    code, size = "", 70
-    while not code and size > 20:
-        size -= 20
+    code, size = "", 100
+    while not code and size > 30:
+        size -= 10
         resized = resize_and_invert(cropped, target_height=size)
         if debug:
             debug_dir = "ocr_debug"
@@ -646,7 +651,7 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
             cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
         recognized_text = recognize_with_tesseract(resized)
         corrected_text = correct_text(recognized_text)
-        code = code[0] if (code := re.match(r"[А-Я]\d{4}", corrected_text)) else ""
+        code = code[0] if (code := re.match(r"^([А-Я]\d{4})$", corrected_text)) else ""
 
     if not code:
         if need_manual_check:
@@ -662,7 +667,7 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
 
 
 def organize_files(
-    input_folder, output_base, coords, copy=False, debug=False, not_fix_wrong=False, recursive=False
+    input_folder, output_base, coords, copy=False, quiet=False, silent=False, debug=False, not_fix_wrong=False, recursive=False
 ):
     """Организация файлов по папкам с поддержкой рекурсивного обхода"""
     os.makedirs(output_base, exist_ok=True)
@@ -670,13 +675,14 @@ def organize_files(
     files = find_image_files(input_folder, recursive)
     total_files = len(files)
     if not files:
-        print("Нет файлов для обработки!")
+        if not silent:
+            print("Нет файлов для обработки!")
         return (0, 0)
 
     def process(files, need_manual_check=False, debug=False):
         moved_files = 0
         for i, file_path in enumerate(files):
-            print_progress(i, total_files, prefix='Обработка файлов: ')
+            print_progress(i, total_files, prefix='Обработка файлов: ', silent=silent)
             
             # Получаем оригинальное имя файла
             orig_name = os.path.basename(file_path)
@@ -689,7 +695,8 @@ def organize_files(
                 img = cv2.imread(tmp_name)
                 os.rename(tmp_name, file_path)
                 if img is None:
-                    print(f"Ошибка загрузки: {file_path}")
+                    if debug:
+                        print(f"Ошибка загрузки: {file_path}")
                     continue
 
                 # Обработка изображения
@@ -705,9 +712,12 @@ def organize_files(
                         shutil.copy2(file_path, target_path)
                     else:
                         shutil.move(file_path, target_path)
-                    
-                    print(f"{orig_name} → {folder_name}\\          ")
+                    if not quiet and not silent:
+                        print(f"{file_path} → {target_path}") # вместо {orig_name} → {folder_name}\\          ")
                     moved_files += 1
+                else:
+                    if not silent and not quiet:
+                        print(f"Не распознан код в {file_path}")
                     
             except Exception as e:
                 if debug:
@@ -720,7 +730,7 @@ def organize_files(
     unrec = len(needed_manual_recognizing)
     
     # Второй проход - ручная проверка нераспознанных
-    if not not_fix_wrong and needed_manual_recognizing:
+    if not not_fix_wrong and needed_manual_recognizing and not silent:
         print(f"\nНачинаем ручную проверку {unrec} нераспознанных файлов")
         manual_files = needed_manual_recognizing.copy()
         needed_manual_recognizing.clear()
@@ -764,6 +774,16 @@ if __name__ == "__main__":
         help="Не предлагать исправлять все неверно распознанные пока не разложатся все файлы",
     )
     parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Выводить только процент выполнения",
+    )
+    parser.add_argument(
+        "-s", "--silent",
+        action="store_true",
+        help="Не выводить ничего",
+    )
+    parser.add_argument(
         "-d", "--debug",
         action="store_true",
         help="Сохранять промежуточные изображения для отладки",
@@ -778,7 +798,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not os.path.isdir(args.input_folder):
-        print(f"Ошибка: папка {args.input_folder} не существует!")
+        if args.debug: 
+            print(f"Ошибка: папка {args.input_folder} не существует!")
         exit(1)
 
     rec, unrec = organize_files(
@@ -786,8 +807,11 @@ if __name__ == "__main__":
         output_base=args.output_base,
         coords=(args.x0, args.y0, args.width, args.heigh),
         copy=args.copy,
+        quiet=args.quiet,
+        silent=args.silent,
         recursive=args.recursive,
         debug=args.debug,
         not_fix_wrong=args.not_fix_wrong,
     )
-    print(f"Распознано {rec} кодов, не распознано - {unrec}")
+    if not args.silent:
+        print(f"Распознано {rec} кодов, не распознано - {unrec} ({100 * rec / unrec:f.2}%)")
