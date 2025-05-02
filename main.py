@@ -1,3 +1,5 @@
+"""recognizing codes on scanned sheets"""
+
 import argparse
 import os
 import re
@@ -403,7 +405,7 @@ def resize_and_invert(image, target_height=200):
 def recognize_with_tesseract(image):
     """Распознавание с помощью Tesseract"""
     custom_config = r"--oem 3 --psm 6"
-    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"  
+    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"
     # # не нужно, тк проблема с кодировкой и он их не так воспринимает
     text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
     return "".join(c for c in text if c.isalnum())
@@ -462,6 +464,7 @@ def correct_text(text):
 
 def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
     "Ручная проверка в графическом интерфейсе Tkinter"
+
     class ResultContainer:
         def __init__(self):
             self.value = predicted_text
@@ -470,24 +473,24 @@ def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
     result = ResultContainer()
 
     # Функции подтверждения и выхода
-    def confirm(e=None):
+    def confirm(_=None):
         result.value = manual_check.entry_var.get()
         manual_check.root.quit()  # Выходим из mainloop
 
-    def escape(e=None):
+    def escape(_=None):
         result.should_exit = True
         result.should_exit = True
         manual_check.root.quit()
         manual_check.root.destroy()
         sys.exit(0)
 
-    def skip(e=None):
+    def skip(_=None):
         result.value = ""
         manual_check.root.quit()
-    
+
     # Функция автозамены символов (как в старом варианте)
-    def on_text_change(*args):
-        #fmt: off
+    def on_text_change(*_):
+        # fmt: off
         translation_table = str.maketrans({
             'q': 'Й', 'w': 'Ц', 'e': 'У', 'r': 'К', 't': 'Е', 'y': 'Н',
             'u': 'Г', 'i': 'Ш', 'o': 'Щ', 'p': 'З', '[': 'Х', ']': 'Ъ',
@@ -496,13 +499,13 @@ def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
             'z': 'Я', 'x': 'Ч', 'c': 'С', 'v': 'М', 'b': 'И', 'n': 'Т',
             'm': 'Ь', ',': 'Б', '.': 'Ю',
             'Q': 'Й', 'W': 'Ц', 'E': 'У', 'R': 'К', 'T': 'Е', 'Y': 'Н',
-            'U': 'Г', 'I': 'Ш', 'O': 'Щ', 'P': 'З', 
+            'U': 'Г', 'I': 'Ш', 'O': 'Щ', 'P': 'З',
             'A': 'Ф', 'S': 'Ы', 'D': 'В', 'F': 'А', 'G': 'П', 'H': 'Р',
-            'J': 'О', 'K': 'Л', 'L': 'Д', 
+            'J': 'О', 'K': 'Л', 'L': 'Д',
             'Z': 'Я', 'X': 'Ч', 'C': 'С', 'V': 'М', 'B': 'И', 'N': 'Т',
             'M': 'Ь'
         })
-        #fmt: on
+        # fmt: on
         current_text = manual_check.entry_var.get()
         cursor_pos = manual_check.entry.index(tk.INSERT)
         new_text = current_text.translate(translation_table).upper()
@@ -519,70 +522,74 @@ def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
         manual_check.counter_label = ttk.Label(
             manual_check.root,
             text=f"Прогресс: {cur_num}/{total} ({100*cur_num/total:.1f}%)",
-            font=("Arial", 14, "bold")
+            font=("Arial", 14, "bold"),
         )
         manual_check.counter_label.pack(pady=5)
-        
+
         # Label для отображения информации о файле
         manual_check.file_label = ttk.Label(manual_check.root, text=f"Файл: {filename}")
         manual_check.file_label.pack()
-        
+
         # Label для отображения распознанного кода
         manual_check.code_label = ttk.Label(
-            manual_check.root,
-            text=predicted_text,
-            font=("Arial", 12, "bold")
+            manual_check.root, text=predicted_text, font=("Arial", 12, "bold")
         )
         manual_check.code_label.pack()
-        
+
         # Label с инструкциями
         ttk.Label(manual_check.root, text="ESC - пропустить").pack()
         ttk.Label(manual_check.root, text="Enter - подтвердить").pack()
-        
+
         # Label для изображения
         manual_check.img_label = ttk.Label(manual_check.root)
         manual_check.img_label.pack(pady=10)
-        
+
         # Поле для ввода (как в старом варианте)
         manual_check.entry_var = tk.StringVar(value=predicted_text)
         manual_check.entry = ttk.Entry(
             manual_check.root,
             textvariable=manual_check.entry_var,
             width=30,
-            font=("Arial", 12)
+            font=("Arial", 12),
         )
         manual_check.entry.pack(pady=10)
-        
+
         # Кнопки (для тех, кто предпочитает мышку)
         btn_frame = ttk.Frame(manual_check.root)
         btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="Подтвердить (Enter)", command=confirm).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Пропустить (ESC)", command=skip).pack(side=tk.LEFT, padx=5)
-        
+        ttk.Button(btn_frame, text="Подтвердить (Enter)", command=confirm).pack(
+            side=tk.LEFT, padx=5
+        )
+        ttk.Button(btn_frame, text="Пропустить (ESC)", command=skip).pack(
+            side=tk.LEFT, padx=5
+        )
+
         # Горячие клавиши (как в старом варианте)
         manual_check.root.bind("<Return>", confirm)
         manual_check.root.bind("<Escape>", skip)
         manual_check.root.protocol("WM_DELETE_WINDOW", escape)
-        
+
         manual_check.window_initialized = True
-    
+
     # Обновляем содержимое окна для нового изображения
-    manual_check.counter_label.config(text=f"Прогресс: {cur_num}/{total} ({100*cur_num/total:.1f}%)")
+    manual_check.counter_label.config(
+        text=f"Прогресс: {cur_num}/{total} ({100*cur_num/total:.1f}%)"
+    )
     manual_check.file_label.config(text=f"Файл: {filename}")
     manual_check.code_label.config(text=predicted_text)
     manual_check.entry_var.set(predicted_text)
-    
+
     # Обновляем изображение
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(img_rgb)
-    
+
     # Масштабирование (как в старом варианте)
     max_width = 600
     if pil_image.width > max_width:
         ratio = max_width / pil_image.width
         new_height = int(pil_image.height * ratio)
-        pil_image = pil_image.resize((max_width, new_height), Image.LANCZOS)
-    
+        pil_image = pil_image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+
     tk_image = ImageTk.PhotoImage(pil_image)
     manual_check.img_label.config(image=tk_image)
     manual_check.img_label.image = tk_image  # Сохраняем ссылку
@@ -590,31 +597,34 @@ def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
     if not hasattr(manual_check, "centred"):
         # Принудительно обновляем окно, чтобы получить его реальные размеры
         manual_check.root.update_idletasks()
-        
+
         # Вычисляем координаты для центрирования
-        x = (manual_check.root.winfo_screenwidth() - manual_check.root.winfo_width()) // 2
-        y = (manual_check.root.winfo_screenheight() - manual_check.root.winfo_height()) // 2
-        
+        x = (
+            manual_check.root.winfo_screenwidth() - manual_check.root.winfo_width()
+        ) // 2
+        y = (
+            manual_check.root.winfo_screenheight() - manual_check.root.winfo_height()
+        ) // 2
+
         # Устанавливаем позицию окна
         manual_check.root.geometry(f"+{x}+{y}")
         manual_check.centred = True
-    
+
     # Фокус и выделение текста (как в старом варианте)
     manual_check.entry.focus_force()
     manual_check.entry.select_range(0, tk.END)
-    
-    
+
     # Подключаем обработчик изменений
     manual_check.entry_var.trace_add("write", on_text_change)
-    
+
     # Запускаем главный цикл
     manual_check.root.mainloop()
-    
+
     if result.should_exit:
         manual_check.root.destroy()
         manual_check.root.quit()
         sys.exit(0)
-    
+
     return result.value
 
 
@@ -812,6 +822,7 @@ def organize_files(
         return moved_files
 
     # Первый проход - автоматическое распознавание
+    global needed_manual_recognizing
     if not manual_only:
         rec = process(files, debug=debug)
     else:
@@ -921,7 +932,7 @@ if __name__ == "__main__":
             print(f"Ошибка: папка {args.input_folder} не существует!")
         exit(1)
 
-    rec, unrec = organize_files(
+    recognized, unrecognized = organize_files(
         input_folder=args.input_folder,
         output_base=args.output_base,
         coords=(args.x0, args.y0, args.width, args.heigh),
@@ -935,5 +946,5 @@ if __name__ == "__main__":
     )
     if not args.silent:
         print(
-            f"Распознано {rec} кодов, не распознано - {unrec} ({100 * rec / (rec + unrec):.2f}%)"
+            f"Распознано {recognized} кодов, не распознано - {unrecognized} ({100 * recognized / (recognized + unrecognized):.2f}%)"
         )

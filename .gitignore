@@ -1,5 +1,6 @@
 .venv
 .vscode
+.pylintrc
 ocr_debug
 archive
 archive1
