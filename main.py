@@ -3,20 +3,17 @@ import os
 import re
 import sys
 import shutil
+import tkinter as tk
+from tkinter import ttk
 
 # import sys
 import cv2
 import numpy as np
 
-# import matplotlib.pyplot as plt
 import pytesseract
 
 # import easyocr
-import tkinter as tk
-from tkinter import ttk
 from PIL import Image, ImageTk
-
-# from matplotlib.widgets import TextBox
 
 ## you have to have installed tesseract [in $PATH] with russian language https://github.com/tesseract-ocr/tesseract/releases
 # Установите путь к tesseract.exe, если он не в PATH
@@ -27,15 +24,6 @@ from PIL import Image, ImageTk
 # Настройки по умолчанию
 DEFAULT_COORDS = (1100, 0, 1200, 700)  # x, y, w, h
 needed_manual_recognizing = []  # для не распознанных
-
-# def enable_unicode_windows():
-#     if sys.platform == 'win32':
-#         import ctypes
-#         kernel32 = ctypes.windll.kernel32
-#         kernel32.SetConsoleCP(65001)
-#         kernel32.SetConsoleOutputCP(65001)
-
-# enable_unicode_windows()
 
 
 def translit(name):
@@ -122,6 +110,7 @@ def translit(name):
     # Применяем транслитерацию
     return name.translate(trans_table)
 
+
 def ensure_valid_folder_name(name):
     """Заменяет запрещённые символы в именах папок"""
     invalid_chars = '<>:"/\\|?*'
@@ -130,123 +119,89 @@ def ensure_valid_folder_name(name):
     return name.strip()
 
 
-def old_find_text_contour(image):
-    """Находит прямоугольный контур вокруг текста"""
-    # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(image, (5, 5), 0)
-    edged = cv2.Canny(blurred, 150, 200)
-
-    contours, _ = cv2.findContours(
-        edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-
-    for contour in contours:
-        peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-
-        if len(approx) == 4:  # Если найден прямоугольник
-            return approx
-
-    return None
-
-
 def find_text_contour(image):
     """Находит прямоугольный контур вокруг текста с учетом рамки"""
     # Улучшенная бинаризация
     blurred = cv2.GaussianBlur(image, (5, 5), 0)
     edged = cv2.Canny(blurred, 50, 150)
-    
+
     # Увеличение контуров
     kernel = np.ones((3, 3), np.uint8)
     dilated = cv2.dilate(edged, kernel, iterations=2)
-    
-    contours, _ = cv2.findContours(dilated.copy(), 
-                                 cv2.RETR_EXTERNAL, 
-                                 cv2.CHAIN_APPROX_SIMPLE)
-    
+
+    contours, _ = cv2.findContours(
+        dilated.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
     # Фильтрация контуров по площади и форме
     min_area = 500  # Минимальная площадь контура
     for contour in sorted(contours, key=cv2.contourArea, reverse=True):
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-        
+
         # Проверяем, что контур прямоугольный и достаточно большой
         if len(approx) == 4 and cv2.contourArea(contour) > min_area:
             return approx
-    
+
     return None
 
 
 def crop_to_contour(image, contour, padding=10):
     """
     Обрезает изображение по контуру, убирая рамку.
-    
+
     Args:
         image: Исходное изображение.
         contour: Найденный контур рамки.
         padding: Отступ внутрь от границ рамки (в пикселях).
-    
+
     Returns:
         Обрезанное изображение без рамки.
     """
     # Получаем координаты рамки
     x, y, w, h = cv2.boundingRect(contour)
-    
+
     # Уменьшаем область обрезки (сдвигаем внутрь)
     x += padding
     y += padding
     w -= 2 * padding  # Уменьшаем ширину с двух сторон
     h -= 2 * padding  # Уменьшаем высоту с двух сторон
-    
+
     # Проверяем, чтобы новые координаты не вышли за границы
     x = max(x, 0)
     y = max(y, 0)
     w = min(w, image.shape[1] - x)
     h = min(h, image.shape[0] - y)
-    
+
     # Обрезаем изображение
-    cropped = image[y:y+h, x:x+w]
+    cropped = image[y : y + h, x : x + w]
     return cropped
 
-
-def old_preprocess_image(image):
-    """Улучшение изображения перед распознаванием"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    denoised = cv2.fastNlMeansDenoising(enhanced, h=30)
-    _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    sharpened = cv2.filter2D(thresh, -1, kernel)
-    clean = cv2.medianBlur(sharpened, 7)
-    return clean
 
 def ext_preprocess_image(image):
     """Финальная обработка с сохранением толстых рамок и текста"""
     # 1. Подготовка изображения
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
+
     # 2. Улучшение контраста (CLAHE лучше работает для текста)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    
+
     # 3. Адаптивная бинаризация (сохраняет толстые линии)
-    binary = cv2.adaptiveThreshold(enhanced, 255,
-                                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                 cv2.THRESH_BINARY,
-                                 21, 5)  # Увеличиваем размер блока для сохранения толстых линий
-    
+    binary = cv2.adaptiveThreshold(
+        enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 5
+    )  # Увеличиваем размер блока для сохранения толстых линий
+
     # 4. Морфологические операции для сохранения толстых элементов
-    kernel_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-    
+    kernel_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+
     # 5. Удаление мелкого шума без удаления толстых линий
     denoised = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_clean, iterations=1)
-    
+
     # 6. Усиление толстых линий
-    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     enhanced_lines = cv2.dilate(denoised, kernel_dilate, iterations=1)
-    
+
     return enhanced_lines
 
 
@@ -254,20 +209,20 @@ def preprocess_image(image):
     """Альтернативный вариант с выделением толстых линий"""
     # 1. Конвертация в grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
+
     # 2. Размытие для уменьшения шума
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
+
     # 3. Детекция толстых линий (используем threshold вместо adaptiveThreshold)
     _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
+
     # 4. Находим только толстые линии (удаляем мелкие элементы)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7,7))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    
+
     # 5. Инвертируем обратно
     result = cv2.bitwise_not(closed)
-    
+
     return result
 
 
@@ -275,37 +230,44 @@ def deskew_image(image, max_angle=20):
     """Выравнивает наклоненный текст, не превышая максимальный угол поворота"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.bitwise_not(gray)
-    
+
     # Определяем угол наклона
     coords = np.column_stack(np.where(gray > 0))
     rect = cv2.minAreaRect(coords)
     angle = rect[-1]
-    
+
     # Корректируем угол в зависимости от ориентации
     if angle < -45:
         angle = -(90 + angle)
     else:
         angle = -angle
-    
+
     # Если угол превышает максимальный - оставляем максимальный с сохранением направления
     if abs(angle) > max_angle:
         angle = max_angle if angle > 0 else -max_angle
-    
+
     # Не поворачиваем если угол меньше 1 градуса
     if abs(angle) < 1.0:
         return image.copy()
-    
+
     # Поворачиваем изображение
     (h, w) = image.shape[:2]
     center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(image, M, (w, h),
-                          flags=cv2.INTER_CUBIC,
-                          borderMode=cv2.BORDER_REPLICATE)
+    rotated = cv2.warpAffine(
+        image, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+    )
     return rotated
 
 
-def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, quiet=False, silent=False, debug=False):
+def deskew_image_by_frame(
+    cropped_img,
+    max_angle=20,
+    frame_thickness=15,
+    quiet=False,
+    silent=False,
+    debug=False,
+):
     """
     Универсальная функция выравнивания, работающая с UMat и numpy.ndarray
     Возвращает (выровненное изображение, угол поворота) или (None, 0) при ошибке
@@ -317,17 +279,17 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, quiet=F
             img_np = cropped_img.get()
         else:
             img_np = np.asarray(cropped_img)
-            
+
         # Проверка на пустое изображение
         if img_np.size == 0:
             if not quiet and not silent:
-                print("Ошибка: пустое изображение") 
+                print("Ошибка: пустое изображение")
             return None, 0
-            
+
         # Приведение к uint8 если нужно
         if img_np.dtype != np.uint8:
             img_np = img_np.astype(np.uint8)
-            
+
     except Exception as e:
         if debug:
             print(f"Ошибка подготовки изображения: {str(e)}")
@@ -353,49 +315,54 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, quiet=F
         # Размытие
         blurred = cv2.GaussianBlur(gray, (7, 7), 0)
         # blurred = cv2.medianBlur(gray, 5)  # Лучше для шумных изображений
-        
+
         # Детекция границ
         edges = cv2.Canny(blurred, 70, 180)
-        
+
         # Усиление контуров
         kernel = np.ones((frame_thickness, frame_thickness), np.uint8)
         dilated = cv2.dilate(edges, kernel, iterations=1)
-        
+
         # Поиск контуров
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
+        contours, _ = cv2.findContours(
+            dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
         if not contours:
-            if debug: print("Контуры не найдены")
+            if debug:
+                print("Контуры не найдены")
             return img_np.copy(), 0.0
-        
+
         # Расчет угла поворота
         angles = []
         for cnt in contours:
             rect = cv2.minAreaRect(cnt)
             angle = rect[-1]
             angles.append(angle if angle < -45 else angle - 90)
-        
+
         if not angles:
             return img_np.copy(), 0.0
-            
+
         median_angle = np.median(angles)
         final_angle = max(-max_angle, min(max_angle, median_angle))
-        
+
         if abs(final_angle) < 0.5:
-            if debug: print(f"Угол слишком мал: {final_angle:.2f}°")
+            if debug:
+                print(f"Угол слишком мал: {final_angle:.2f}°")
             return img_np.copy(), 0.0
-        
+
         # Поворот изображения
         h, w = img_np.shape[:2]
-        M = cv2.getRotationMatrix2D((w//2, h//2), final_angle, 1.0)
-        rotated = cv2.warpAffine(img_np, M, (w, h),
-                               flags=cv2.INTER_CUBIC,
-                               borderMode=cv2.BORDER_REPLICATE)
-        
+        M = cv2.getRotationMatrix2D((w // 2, h // 2), final_angle, 1.0)
+        rotated = cv2.warpAffine(
+            img_np, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+        )
+
         return rotated, final_angle
-        
+
     except Exception as e:
-        if debug: print(f"Ошибка обработки изображения: {str(e)}")
+        if debug:
+            print(f"Ошибка обработки изображения: {str(e)}")
         return None, 0
 
 
@@ -409,32 +376,35 @@ def deskew_image_by_frame(cropped_img, max_angle=20, frame_thickness=15, quiet=F
 def resize_and_invert(image, target_height=200):
     """
     Уменьшает изображение до 200px в высоту (с пропорциями) и инвертирует цвета.
-    
+
     Args:
         image (numpy.ndarray): Входное изображение (BGR или Grayscale).
         target_height (int): Желаемая высота (по умолчанию 200px).
-    
+
     Returns:
         numpy.ndarray: Уменьшенное и инвертированное изображение.
     """
     # Получаем текущие размеры
     h, w = image.shape[:2]
-    
+
     # Рассчитываем новый размер с сохранением пропорций
     ratio = target_height / h
     new_width = int(w * ratio)
-    resized = cv2.resize(image, (new_width, target_height), interpolation=cv2.INTER_AREA)
-    
+    resized = cv2.resize(
+        image, (new_width, target_height), interpolation=cv2.INTER_AREA
+    )
+
     # Инвертируем цвета (чтобы текст был черным на белом фоне)
     inverted = cv2.bitwise_not(resized)
-    
+
     return inverted
 
 
 def recognize_with_tesseract(image):
     """Распознавание с помощью Tesseract"""
     custom_config = r"--oem 3 --psm 6"
-    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"  # не нужно, тк проблема с кодировкой и он их не так воспринимает
+    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"  
+    # # не нужно, тк проблема с кодировкой и он их не так воспринимает
     text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
     return "".join(c for c in text if c.isalnum())
 
@@ -490,89 +460,167 @@ def correct_text(text):
     return "".join(corrected)
 
 
-def manual_check(img, predicted_text, filename=""):
-    troot = tk.Tk() # для использования Toplevel окон
-    troot.withdraw()  # Скрываем главное окно
-    root = tk.Toplevel()  # Используем Toplevel вместо Tk для дочерних окон
-    root.title("Проверка распознавания")
+def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
+    "Ручная проверка в графическом интерфейсе Tkinter"
+    class ResultContainer:
+        def __init__(self):
+            self.value = predicted_text
+            self.should_exit = False
+
+    result = ResultContainer()
+
+    # Функции подтверждения и выхода
+    def confirm(e=None):
+        result.value = manual_check.entry_var.get()
+        manual_check.root.quit()  # Выходим из mainloop
+
+    def escape(e=None):
+        result.should_exit = True
+        result.should_exit = True
+        manual_check.root.quit()
+        manual_check.root.destroy()
+        sys.exit(0)
+
+    def skip(e=None):
+        result.value = ""
+        manual_check.root.quit()
     
-    # Делаем окно модальным (но не блокирующим полностью)
-    root.grab_set()
-    root.focus_force()
+    # Функция автозамены символов (как в старом варианте)
+    def on_text_change(*args):
+        #fmt: off
+        translation_table = str.maketrans({
+            'q': 'Й', 'w': 'Ц', 'e': 'У', 'r': 'К', 't': 'Е', 'y': 'Н',
+            'u': 'Г', 'i': 'Ш', 'o': 'Щ', 'p': 'З', '[': 'Х', ']': 'Ъ',
+            'a': 'Ф', 's': 'Ы', 'd': 'В', 'f': 'А', 'g': 'П', 'h': 'Р',
+            'j': 'О', 'k': 'Л', 'l': 'Д', ';': 'Ж', "'": 'Э',
+            'z': 'Я', 'x': 'Ч', 'c': 'С', 'v': 'М', 'b': 'И', 'n': 'Т',
+            'm': 'Ь', ',': 'Б', '.': 'Ю',
+            'Q': 'Й', 'W': 'Ц', 'E': 'У', 'R': 'К', 'T': 'Е', 'Y': 'Н',
+            'U': 'Г', 'I': 'Ш', 'O': 'Щ', 'P': 'З', 
+            'A': 'Ф', 'S': 'Ы', 'D': 'В', 'F': 'А', 'G': 'П', 'H': 'Р',
+            'J': 'О', 'K': 'Л', 'L': 'Д', 
+            'Z': 'Я', 'X': 'Ч', 'C': 'С', 'V': 'М', 'B': 'И', 'N': 'Т',
+            'M': 'Ь'
+        })
+        #fmt: on
+        current_text = manual_check.entry_var.get()
+        cursor_pos = manual_check.entry.index(tk.INSERT)
+        new_text = current_text.translate(translation_table).upper()
+        if new_text != current_text:
+            manual_check.entry_var.set(new_text)
+            manual_check.entry.icursor(cursor_pos)
+
+    # Создаём главное окно один раз при первом вызове
+    if not hasattr(manual_check, "window_initialized"):
+        # Инициализация главного окна
+        manual_check.root = tk.Tk()
+        manual_check.root.title("Ручная проверка кодов")
+
+        manual_check.counter_label = ttk.Label(
+            manual_check.root,
+            text=f"Прогресс: {cur_num}/{total} ({100*cur_num/total:.1f}%)",
+            font=("Arial", 14, "bold")
+        )
+        manual_check.counter_label.pack(pady=5)
+        
+        # Label для отображения информации о файле
+        manual_check.file_label = ttk.Label(manual_check.root, text=f"Файл: {filename}")
+        manual_check.file_label.pack()
+        
+        # Label для отображения распознанного кода
+        manual_check.code_label = ttk.Label(
+            manual_check.root,
+            text=predicted_text,
+            font=("Arial", 12, "bold")
+        )
+        manual_check.code_label.pack()
+        
+        # Label с инструкциями
+        ttk.Label(manual_check.root, text="ESC - пропустить").pack()
+        ttk.Label(manual_check.root, text="Enter - подтвердить").pack()
+        
+        # Label для изображения
+        manual_check.img_label = ttk.Label(manual_check.root)
+        manual_check.img_label.pack(pady=10)
+        
+        # Поле для ввода (как в старом варианте)
+        manual_check.entry_var = tk.StringVar(value=predicted_text)
+        manual_check.entry = ttk.Entry(
+            manual_check.root,
+            textvariable=manual_check.entry_var,
+            width=30,
+            font=("Arial", 12)
+        )
+        manual_check.entry.pack(pady=10)
+        
+        # Кнопки (для тех, кто предпочитает мышку)
+        btn_frame = ttk.Frame(manual_check.root)
+        btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Подтвердить (Enter)", command=confirm).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Пропустить (ESC)", command=skip).pack(side=tk.LEFT, padx=5)
+        
+        # Горячие клавиши (как в старом варианте)
+        manual_check.root.bind("<Return>", confirm)
+        manual_check.root.bind("<Escape>", skip)
+        manual_check.root.protocol("WM_DELETE_WINDOW", escape)
+        
+        manual_check.window_initialized = True
     
-    # Конвертируем изображение
+    # Обновляем содержимое окна для нового изображения
+    manual_check.counter_label.config(text=f"Прогресс: {cur_num}/{total} ({100*cur_num/total:.1f}%)")
+    manual_check.file_label.config(text=f"Файл: {filename}")
+    manual_check.code_label.config(text=predicted_text)
+    manual_check.entry_var.set(predicted_text)
+    
+    # Обновляем изображение
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(img_rgb)
     
-    # Масштабирование
-    max_width = 800
+    # Масштабирование (как в старом варианте)
+    max_width = 600
     if pil_image.width > max_width:
         ratio = max_width / pil_image.width
         new_height = int(pil_image.height * ratio)
         pil_image = pil_image.resize((max_width, new_height), Image.LANCZOS)
     
     tk_image = ImageTk.PhotoImage(pil_image)
+    manual_check.img_label.config(image=tk_image)
+    manual_check.img_label.image = tk_image  # Сохраняем ссылку
+
+    if not hasattr(manual_check, "centred"):
+        # Принудительно обновляем окно, чтобы получить его реальные размеры
+        manual_check.root.update_idletasks()
+        
+        # Вычисляем координаты для центрирования
+        x = (manual_check.root.winfo_screenwidth() - manual_check.root.winfo_width()) // 2
+        y = (manual_check.root.winfo_screenheight() - manual_check.root.winfo_height()) // 2
+        
+        # Устанавливаем позицию окна
+        manual_check.root.geometry(f"+{x}+{y}")
+        manual_check.centred = True
     
-    # Отображение
-    img_label = ttk.Label(root, image=tk_image)
-    img_label.image = tk_image  # Сохраняем ссылку!
-    img_label.pack(pady=10)
+    # Фокус и выделение текста (как в старом варианте)
+    manual_check.entry.focus_force()
+    manual_check.entry.select_range(0, tk.END)
     
-    # Текст и поле ввода
-    ttk.Label(root, text=f"Файл: {filename}\nРаспознанный код:").pack()
-    ttk.Label(root, text=predicted_text, font=("Arial", 12, "bold")).pack()
     
-    ttk.Label(root, text="ESC - Выход из редактирования всех оставшихся").pack()
-    ttk.Label(root, text="Enter - подтвердить. Пустая строка для пропуска").pack()
+    # Подключаем обработчик изменений
+    manual_check.entry_var.trace_add("write", on_text_change)
     
-    entry_var = tk.StringVar(value=predicted_text)
-    entry = ttk.Entry(root, textvariable=entry_var, width=30, font=("Arial", 12))
-    entry.pack(pady=10)
+    # Запускаем главный цикл
+    manual_check.root.mainloop()
     
-    # Переменная для результата
-    result = [predicted_text]
-    
-    def confirm():
-        result[0] = entry.get()
-        troot.quit()
-        root.quit()
-    
-    def escape():
-        root.destroy()
-        troot.destroy()
+    if result.should_exit:
+        manual_check.root.destroy()
+        manual_check.root.quit()
         sys.exit(0)
     
-    # Кнопки
-    btn_frame = ttk.Frame(root)
-    btn_frame.pack(pady=10)
-    
-    ttk.Button(btn_frame, text="Подтвердить (Enter)", command=confirm).pack(side=tk.LEFT, padx=5)
-    ttk.Button(btn_frame, text="Выход (ESC)", command=escape).pack(side=tk.LEFT, padx=5)
-    
-    # Настройка горячих клавиш
-    entry.bind("<Return>", lambda e: confirm())
-    root.bind("<Return>", lambda e: confirm())
-    root.bind("<Escape>", lambda e: escape())
-    
-    # Фокус и выделение текста
-    entry.focus_force()
-    entry.select_range(0, tk.END)
-    
-    # Центрирование окна
-    root.update_idletasks()
-    width = root.winfo_width()
-    height = root.winfo_height()
-    x = (root.winfo_screenwidth() // 2) - (width // 2)
-    y = (root.winfo_screenheight() // 2) - (height // 2)
-    root.geometry(f'+{x}+{y}')
-    
-    # Ждем закрытия окна
-    root.mainloop()
-    
-    return result[0]
+    return result.value
 
 
-def find_image_files(input_folder, recursive=False, extensions=('png', 'jpg', 'jpeg', 'tif', 'bmp')):
+def find_image_files(
+    input_folder, recursive=False, extensions=("png", "jpg", "jpeg", "tif", "bmp")
+):
     """Находит все изображения в директории (рекурсивно при необходимости)"""
     files = []
     if recursive:
@@ -582,14 +630,14 @@ def find_image_files(input_folder, recursive=False, extensions=('png', 'jpg', 'j
                     files.append(os.path.join(root, filename))
     else:
         files = [
-            os.path.join(input_folder, f) 
-            for f in os.listdir(input_folder) 
+            os.path.join(input_folder, f)
+            for f in os.listdir(input_folder)
             if f.lower().endswith(extensions)
         ]
     return files
 
 
-def print_progress(current, total, prefix='', suffix='', silent=False):
+def print_progress(current, total, prefix="", suffix="", silent=False):
     """
     Выводит прогресс в процентах с возможностью обновления строки
     :param current: текущее количество обработанных элементов
@@ -597,20 +645,30 @@ def print_progress(current, total, prefix='', suffix='', silent=False):
     :param prefix: текст перед процентом
     :param suffix: текст после процента
     """
-    if silent: return
+    if silent:
+        return
     percent = 100 * (current / float(total))
     # \r возвращает каретку в начало строки
     # end='' предотвращает перенос строки
-    sys.stdout.write(f'\r{prefix}{percent:.1f}% ({current}/{total}){suffix}\r')
+    sys.stdout.write(f"\r{prefix}{percent:.1f}% ({current}/{total}){suffix}\r")
     sys.stdout.flush()
     if current == total:
         print()  # перенос строки после завершения
 
 
-def process_image_from_memory(img, coords, orig_name, file_path, need_manual_check=False, debug=False):
+def process_image_from_memory(
+    img,
+    coords,
+    orig_name,
+    file_path,
+    need_manual_check=False,
+    debug=False,
+    number=1,
+    total=1,
+):
     """Обработка изображения из памяти"""
     x, y, w, h = coords
-    
+
     # Вырезаем область интереса
     roi = img[y : y + h, x : x + w]
 
@@ -642,23 +700,31 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
         cropped = roi  # Если контур не найден, используем всю область
 
     code, size = "", 100
-    while not code and size > 30:
-        size -= 10
-        resized = resize_and_invert(cropped, target_height=size)
-        if debug:
-            debug_dir = "ocr_debug"
-            os.makedirs(debug_dir, exist_ok=True)
-            cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
-        recognized_text = recognize_with_tesseract(resized)
-        corrected_text = correct_text(recognized_text)
-        code = code[0] if (code := re.match(r"^([А-Я]\d{4})$", corrected_text)) else ""
+    if not need_manual_check:
+        while not code and size > 30:
+            size -= 10
+            resized = resize_and_invert(cropped, target_height=size)
+            if debug:
+                debug_dir = "ocr_debug"
+                os.makedirs(debug_dir, exist_ok=True)
+                cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
+            recognized_text = recognize_with_tesseract(resized)
+            corrected_text = correct_text(recognized_text)
+            code = (
+                code[0] if (code := re.match(r"^([А-Я]\d{4})$", corrected_text)) else ""
+            )
+    else:
+        corrected_text = ""
 
     if not code:
         if need_manual_check:
-            corrected_text = manual_check(roi, corrected_text, orig_name)
+            corrected_text = manual_check(roi, corrected_text, file_path, number, total)
         else:
             if debug:
-                print(corrected_text, file=open(f"{debug_dir}/{orig_name}.txt", "wt", encoding='utf-8'))
+                print(
+                    corrected_text,
+                    file=open(f"{debug_dir}/{orig_name}.txt", "wt", encoding="utf-8"),
+                )
             corrected_text = ""
         if file_path not in needed_manual_recognizing:
             needed_manual_recognizing.append(file_path)
@@ -667,11 +733,20 @@ def process_image_from_memory(img, coords, orig_name, file_path, need_manual_che
 
 
 def organize_files(
-    input_folder, output_base, coords, copy=False, quiet=False, silent=False, debug=False, not_fix_wrong=False, recursive=False
+    input_folder,
+    output_base,
+    coords,
+    copy=False,
+    quiet=False,
+    silent=False,
+    debug=False,
+    not_fix_wrong=False,
+    manual_only=False,
+    recursive=False,
 ):
     """Организация файлов по папкам с поддержкой рекурсивного обхода"""
     os.makedirs(output_base, exist_ok=True)
-    
+
     files = find_image_files(input_folder, recursive)
     total_files = len(files)
     if not files:
@@ -682,15 +757,15 @@ def organize_files(
     def process(files, need_manual_check=False, debug=False):
         moved_files = 0
         for i, file_path in enumerate(files):
-            print_progress(i, total_files, prefix='Обработка файлов: ', silent=silent)
-            
+            print_progress(i, total_files, prefix="Обработка файлов: ", silent=silent)
+
             # Получаем оригинальное имя файла
             orig_name = os.path.basename(file_path)
-            
+
             try:
                 base_dir = os.path.dirname(file_path)
                 tmp_name = os.path.join(base_dir, translit(orig_name))
-                os.rename(file_path, tmp_name) # cv2 плохо с виндовой кирилицей
+                os.rename(file_path, tmp_name)  # cv2 плохо с виндовой кирилицей
                 # Загружаем изображение
                 img = cv2.imread(tmp_name)
                 os.rename(tmp_name, file_path)
@@ -700,105 +775,149 @@ def organize_files(
                     continue
 
                 # Обработка изображения
-                code = process_image_from_memory(img, coords, orig_name, file_path, need_manual_check, debug)
+                code = process_image_from_memory(
+                    img,
+                    coords,
+                    orig_name,
+                    file_path,
+                    need_manual_check,
+                    debug,
+                    number=i,
+                    total=total_files,
+                )
 
                 if code:
                     folder_name = ensure_valid_folder_name(code)
                     target_folder = os.path.join(output_base, folder_name)
                     os.makedirs(target_folder, exist_ok=True)
                     target_path = os.path.join(target_folder, orig_name)
-                    
+
                     if copy:
                         shutil.copy2(file_path, target_path)
                     else:
                         shutil.move(file_path, target_path)
                     if not quiet and not silent:
-                        print(f"{file_path} → {target_path}") # вместо {orig_name} → {folder_name}\\          ")
+                        print(
+                            f"{file_path} → {target_path}"
+                        )  # вместо {orig_name} → {folder_name}\\          ")
                     moved_files += 1
                 else:
                     if not silent and not quiet:
                         print(f"Не распознан код в {file_path}")
-                    
+
             except Exception as e:
                 if debug:
                     print(f"Ошибка обработки {file_path}: {str(e)}")
-                    
+
         return moved_files
-    
+
     # Первый проход - автоматическое распознавание
-    rec = process(files, debug=debug)
+    if not manual_only:
+        rec = process(files, debug=debug)
+    else:
+        rec = 0
+        needed_manual_recognizing = files
     unrec = len(needed_manual_recognizing)
-    
+
     # Второй проход - ручная проверка нераспознанных
-    if not not_fix_wrong and needed_manual_recognizing and not silent:
-        print(f"\nНачинаем ручную проверку {unrec} нераспознанных файлов")
-        manual_files = needed_manual_recognizing.copy()
+    if manual_only or not not_fix_wrong and needed_manual_recognizing:
+        if not silent:
+            print(f"\nНачинаем ручную проверку {unrec} нераспознанных файлов")
+        rec += process(needed_manual_recognizing, need_manual_check=True, debug=debug)
         needed_manual_recognizing.clear()
-        rec += process(manual_files, need_manual_check=True, debug=debug)
-    
+
     return (rec, unrec)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Программа для автоматической сортировки сканов по распознанным печатным шифрам в рамке",
-        add_help=False
+        add_help=False,
     )
     parser.add_argument("input_folder", help="Папка с исходными изображениями")
     parser.add_argument("output_base", help="Базовая папка для сортировки результатов")
     parser.add_argument(
-        "-x", "--x0", type=int, default=DEFAULT_COORDS[0], help="X координата области с шифром"
+        "-x",
+        "--x0",
+        type=int,
+        default=DEFAULT_COORDS[0],
+        help="X координата области с шифром",
     )
     parser.add_argument(
-        "-y", "--y0", type=int, default=DEFAULT_COORDS[1], help="Y координата области с шифром"
+        "-y",
+        "--y0",
+        type=int,
+        default=DEFAULT_COORDS[1],
+        help="Y координата области с шифром",
     )
     parser.add_argument(
-        "-w", "--width", type=int, default=DEFAULT_COORDS[2], help="Ширина области с шифром"
+        "-w",
+        "--width",
+        type=int,
+        default=DEFAULT_COORDS[2],
+        help="Ширина области с шифром",
     )
     parser.add_argument(
-        "-h" , "--heigh", type=int, default=DEFAULT_COORDS[3], help="Высота области с шифром"
+        "-h",
+        "--heigh",
+        type=int,
+        default=DEFAULT_COORDS[3],
+        help="Высота области с шифром",
     )
     parser.add_argument(
-        "-c", "--copy",
+        "-c",
+        "--copy",
         action="store_true",
         help="Не перемещать, а копировать файлы",
     )
     parser.add_argument(
-        "-r", "--recursive",
+        "-r",
+        "--recursive",
         action="store_true",
         help="Рекурсивный обход поддиректорий, в output_base будет аналогичная иерархия",
     )
     parser.add_argument(
-        "-n", "--not_fix_wrong",
+        "-n",
+        "--not_fix_wrong",
         action="store_true",
         help="Не предлагать исправлять все неверно распознанные пока не разложатся все файлы",
     )
     parser.add_argument(
-        "-q", "--quiet",
+        "-m",
+        "--manual_only",
+        action="store_true",
+        help="Не распознавать - только ручная проверка",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
         action="store_true",
         help="Выводить только процент выполнения",
     )
     parser.add_argument(
-        "-s", "--silent",
+        "-s",
+        "--silent",
         action="store_true",
         help="Не выводить ничего",
     )
     parser.add_argument(
-        "-d", "--debug",
+        "-d",
+        "--debug",
         action="store_true",
         help="Сохранять промежуточные изображения для отладки",
     )
     parser.add_argument(
-        "-?", "--help", 
+        "-?",
+        "--help",
         action="help",
         default=argparse.SUPPRESS,
-        help="Показать это сообщение и выйти"
+        help="Показать это сообщение и выйти",
     )
 
     args = parser.parse_args()
 
     if not os.path.isdir(args.input_folder):
-        if args.debug: 
+        if args.debug:
             print(f"Ошибка: папка {args.input_folder} не существует!")
         exit(1)
 
@@ -812,6 +931,9 @@ if __name__ == "__main__":
         recursive=args.recursive,
         debug=args.debug,
         not_fix_wrong=args.not_fix_wrong,
+        manual_only=args.manual_only,
     )
     if not args.silent:
-        print(f"Распознано {rec} кодов, не распознано - {unrec} ({100 * rec / unrec:f.2}%)")
+        print(
+            f"Распознано {rec} кодов, не распознано - {unrec} ({100 * rec / (rec + unrec):.2f}%)"
+        )
