@@ -397,9 +397,11 @@ def resize_and_invert(image, target_height=200):
     )
 
     # Инвертируем цвета (чтобы текст был черным на белом фоне)
-    inverted = cv2.bitwise_not(resized)
+    count_black = np.sum(resized < 128)
+    if count_black > np.sum(resized.size - count_black):
+        return cv2.bitwise_not(resized)
 
-    return inverted
+    return resized
 
 
 def recognize_with_tesseract(image):
@@ -709,15 +711,17 @@ def process_image_from_memory(
     else:
         cropped = roi  # Если контур не найден, используем всю область
 
-    code, size = "", 100
+    code, size = "", 400
     if not need_manual_check:
-        while not code and size > 30:
-            size -= 10
+        while not code and size > 10:
+            size -= size // 10
             resized = resize_and_invert(cropped, target_height=size)
             if debug:
                 debug_dir = "ocr_debug"
                 os.makedirs(debug_dir, exist_ok=True)
                 cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
+            if np.sum(resized < 127) / (resized.size) < 0.05: # если почти белый лист
+                return "А0000", 0       # папка для всех ведомостей и листов без кодов
             recognized_text = recognize_with_tesseract(resized)
             corrected_text = correct_text(recognized_text)
             code = (
@@ -738,8 +742,12 @@ def process_image_from_memory(
             corrected_text = ""
         if file_path not in needed_manual_recognizing:
             needed_manual_recognizing.append(file_path)
+    # else:
+    #     if debug:
+    #         print(f"{(b:=np.sum(resized < 127))=}, {(b / (resized.size))=:.5f}")
 
-    return corrected_text if corrected_text else None
+
+    return (corrected_text, resized.shape[0]) if corrected_text else (None, None)
 
 
 def organize_files(
@@ -757,6 +765,9 @@ def organize_files(
     """Организация файлов по папкам с поддержкой рекурсивного обхода"""
     os.makedirs(output_base, exist_ok=True)
 
+    if debug:
+        sizes = []
+
     files = find_image_files(input_folder, recursive)
     total_files = len(files)
     if not files:
@@ -773,19 +784,17 @@ def organize_files(
             orig_name = os.path.basename(file_path)
 
             try:
-                base_dir = os.path.dirname(file_path)
-                tmp_name = os.path.join(base_dir, translit(orig_name))
-                os.rename(file_path, tmp_name)  # cv2 плохо с виндовой кирилицей
-                # Загружаем изображение
-                img = cv2.imread(tmp_name)
-                os.rename(tmp_name, file_path)
+                with open(file_path, 'rb') as f:
+                    img_data = np.frombuffer(f.read(), np.uint8)  # cv2 не дружит с кириллицей
+                    img = cv2.imdecode(img_data, cv2.IMREAD_COLOR)
+                    del img_data # не уверен, что он уйдёт вместе с f
                 if img is None:
                     if debug:
                         print(f"Ошибка загрузки: {file_path}")
                     continue
 
                 # Обработка изображения
-                code = process_image_from_memory(
+                code, size = process_image_from_memory(
                     img,
                     coords,
                     orig_name,
@@ -811,6 +820,8 @@ def organize_files(
                             f"{file_path} → {target_path}"
                         )  # вместо {orig_name} → {folder_name}\\          ")
                     moved_files += 1
+                    if debug:
+                        sizes.append(size)
                 else:
                     if not silent and not quiet:
                         print(f"Не распознан код в {file_path}")
@@ -818,6 +829,9 @@ def organize_files(
             except Exception as e:
                 if debug:
                     print(f"Ошибка обработки {file_path}: {str(e)}")
+
+        if debug:
+            print(f"{sorted(sizes)}\n{min(sizes)=:.4f}, {max(sizes)=:.4f}")
 
         return moved_files
 
