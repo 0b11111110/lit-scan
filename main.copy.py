@@ -775,9 +775,6 @@ def organize_files(
     """Организация файлов по папкам с поддержкой рекурсивного обхода"""
     os.makedirs(output_base, exist_ok=True)
 
-    # if debug:
-    #     sizes = []
-
     files = find_image_files(input_folder, recursive)
     total_files = len(files)
     if not files:
@@ -787,6 +784,8 @@ def organize_files(
 
     def process(files, need_manual_check=False, debug=False):
         moved_files = 0
+        pending_file = None  # Для хранения предыдущего (нечётного) файла
+
         for i, file_path in enumerate(files):
             print_progress(i, total_files, prefix="Обработка файлов: ", silent=silent)
 
@@ -818,39 +817,62 @@ def organize_files(
                     total=total_files,
                 )
 
-                if code:
-                    # folder_name = ensure_valid_folder_name(code)  # нет необходимости после регулярки
-                    folder_name = code
-                    target_folder = os.path.join(output_base, folder_name)
-                    os.makedirs(target_folder, exist_ok=True)
-                    target_path = os.path.join(target_folder, orig_name)
+                if i % 2 == 0:  # Нечётный файл (индексация с 0)
+                    pending_file = (file_path, orig_name, code)
+                else:  # Чётный файл
+                    if pending_file:
+                        prev_file_path, prev_orig_name, prev_code = pending_file
 
-                    if copy:
-                        shutil.copy2(file_path, target_path)
-                    else:
-                        shutil.move(file_path, target_path)
-                    if not quiet and not silent:
-                        print(
-                            f"{file_path} → {target_path}"
-                        )  # вместо {orig_name} → {folder_name}\\          ")
-                    moved_files += 1
-                    # if debug:
-                    # sizes.append(size)
-                else:
-                    if not silent and not quiet:
-                        print(f"Не распознан код в {file_path}")
+                        # Определяем конечный код
+                        if code and not prev_code:  # Если текущий распознан, а предыдущий нет
+                            final_code = code
+                        elif prev_code and not code:  # Если предыдущий распознан, а текущий нет
+                            final_code = prev_code
+                        elif code and prev_code and code == prev_code:  # Оба распознаны и совпадают
+                            final_code = code
+                        else:  # Не распознаны или разные коды
+                            final_code = None
 
+                        if final_code:
+                            folder_name = final_code
+                            target_folder = os.path.join(output_base, folder_name)
+                            os.makedirs(target_folder, exist_ok=True)
+
+                            # Перемещаем оба файла
+                            for path, name in [(prev_file_path, prev_orig_name), (file_path, orig_name)]:
+                                target_path = os.path.join(target_folder, name)
+                                if copy:
+                                    shutil.copy2(path, target_path)
+                                else:
+                                    shutil.move(path, target_path)
+                                if not quiet and not silent:
+                                    print(f"{path} → {target_path}")
+                            moved_files += 2
+                        else:
+                            needed_manual_recognizing.extend([prev_file_path, file_path])
+                            if not silent and not quiet:
+                                print(f"Не распознаны или разные коды: {prev_file_path} и {file_path}")
+
+                        pending_file = None  # Сбрасываем ожидание пары
             except Exception as e:
                 if debug:
                     print(f"Ошибка обработки {file_path}: {str(e)}")
+                if pending_file:
+                    needed_manual_recognizing.append(pending_file[0])
+                    pending_file = None
+                needed_manual_recognizing.append(file_path)
 
-        # if debug:
-        #     print(f"{sorted(sizes)}\n{min(sizes)=:.4f}, {max(sizes)=:.4f}")
+        # Обработка оставшегося непарного файла в конце
+        if pending_file:
+            needed_manual_recognizing.append(pending_file[0])
+            if not silent and not quiet:
+                print(f"Оставшийся непарный файл: {pending_file[0]}")
 
         return moved_files
 
     # Первый проход - автоматическое распознавание
     global needed_manual_recognizing
+    needed_manual_recognizing = []
     if not manual_only:
         rec = process(files, debug=debug)
     else:
@@ -859,14 +881,13 @@ def organize_files(
     unrec = len(needed_manual_recognizing)
 
     # Второй проход - ручная проверка нераспознанных
-    if manual_only or not not_fix_wrong and needed_manual_recognizing:
+    if manual_only or (not not_fix_wrong and needed_manual_recognizing):
         if not silent:
             print(f"\nНачинаем ручную проверку {unrec} нераспознанных файлов")
         rec += process(needed_manual_recognizing, need_manual_check=True, debug=debug)
         needed_manual_recognizing.clear()
 
     return (rec, unrec)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
