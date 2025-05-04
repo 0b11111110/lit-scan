@@ -122,7 +122,7 @@ def ensure_valid_folder_name(name):
 
 
 def find_text_contour(image):
-    """Находит прямоугольный контур вокруг текста с учетом рамки"""
+    """Находит прямоугольный контур вокруг текста с учетом рамки и заданного соотношения сторон."""
     # Улучшенная бинаризация
     blurred = cv2.GaussianBlur(image, (5, 5), 0)
     edged = cv2.Canny(blurred, 50, 150)
@@ -135,7 +135,13 @@ def find_text_contour(image):
         dilated.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    # Фильтрация контуров по площади и форме
+    # Целевое соотношение сторон (939:383 ≈ 2.452)
+    target_ratio = 939 / 383  # ≈ 2.452
+    tolerance = 0.15  # Допуск ±15% (можно настроить)
+    min_ratio = target_ratio * (1 - tolerance)  # ~2.08
+    max_ratio = target_ratio * (1 + tolerance)  # ~2.82
+
+    # Фильтрация контуров по площади, форме и соотношению сторон
     min_area = 500  # Минимальная площадь контура
     for contour in sorted(contours, key=cv2.contourArea, reverse=True):
         peri = cv2.arcLength(contour, True)
@@ -143,9 +149,15 @@ def find_text_contour(image):
 
         # Проверяем, что контур прямоугольный и достаточно большой
         if len(approx) == 4 and cv2.contourArea(contour) > min_area:
-            return approx
+            # Получаем ширину и высоту ограничивающего прямоугольника
+            x, y, w, h = cv2.boundingRect(approx)
+            current_ratio = w / h
 
-    return None
+            # Проверяем, что соотношение сторон близко к целевому
+            if min_ratio <= current_ratio <= max_ratio:
+                return approx
+
+    return None  # Если подходящий контур не найден
 
 
 def crop_to_contour(image, contour, padding=10):
@@ -392,9 +404,13 @@ def resize_and_invert(image, target_height=200):
     # Рассчитываем новый размер с сохранением пропорций
     ratio = target_height / h
     new_width = int(w * ratio)
-    resized = cv2.resize(
-        image, (new_width, target_height), interpolation=cv2.INTER_AREA
-    )
+    if new_width > 0 and target_height > 0:
+        resized = cv2.resize(
+            image, (new_width, target_height), interpolation=cv2.INTER_AREA
+        )
+    else:
+        return np.array([])
+
 
     # Инвертируем цвета (чтобы текст был черным на белом фоне)
     count_black = np.sum(resized < 128)
@@ -472,22 +488,21 @@ def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
             self.value = predicted_text
             self.should_exit = False
 
-    result = ResultContainer()
+    manual_check.result = ResultContainer()
 
     # Функции подтверждения и выхода
     def confirm(_=None):
-        result.value = manual_check.entry_var.get()
+        manual_check.result.value = str(manual_check.entry_var.get())
         manual_check.root.quit()  # Выходим из mainloop
 
     def escape(_=None):
-        result.should_exit = True
-        result.should_exit = True
+        manual_check.result.should_exit = True
         manual_check.root.quit()
         manual_check.root.destroy()
         sys.exit(0)
 
     def skip(_=None):
-        result.value = ""
+        manual_check.result.value = ""
         manual_check.root.quit()
 
     # Функция автозамены символов (как в старом варианте)
@@ -622,12 +637,12 @@ def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
     # Запускаем главный цикл
     manual_check.root.mainloop()
 
-    if result.should_exit:
+    if manual_check.result.should_exit:
         manual_check.root.destroy()
         manual_check.root.quit()
         sys.exit(0)
 
-    return result.value
+    return manual_check.result.value
 
 
 def find_image_files(
@@ -706,6 +721,8 @@ def process_image_from_memory(
     if contour is not None:
         # Обрезаем по контуру
         cropped = crop_to_contour(processed, contour)
+        if cropped.size == 0: # если пусто - белый лист
+            return "А0000"      # папка для всех ведомостей и листов без кодов
         if debug:
             cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
     else:
@@ -714,14 +731,14 @@ def process_image_from_memory(
     code, size = "", 400
     if not need_manual_check:
         while not code and size > 10:
-            size -= size // 10
+            size -= 5 + size // 10
             resized = resize_and_invert(cropped, target_height=size)
+            if resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.05: # если почти белый лист
+                return "А0000"      # папка для всех ведомостей и листов без кодов
             if debug:
                 debug_dir = "ocr_debug"
                 os.makedirs(debug_dir, exist_ok=True)
                 cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
-            if np.sum(resized < 127) / (resized.size) < 0.05: # если почти белый лист
-                return "А0000", 0       # папка для всех ведомостей и листов без кодов
             recognized_text = recognize_with_tesseract(resized)
             corrected_text = correct_text(recognized_text)
             code = (
@@ -747,7 +764,8 @@ def process_image_from_memory(
     #         print(f"{(b:=np.sum(resized < 127))=}, {(b / (resized.size))=:.5f}")
 
 
-    return (corrected_text, resized.shape[0]) if corrected_text else (None, None)
+    # return (corrected_text, resized.shape[0]) if corrected_text else (None, None)
+    return corrected_text if corrected_text else None
 
 
 def organize_files(
@@ -765,8 +783,8 @@ def organize_files(
     """Организация файлов по папкам с поддержкой рекурсивного обхода"""
     os.makedirs(output_base, exist_ok=True)
 
-    if debug:
-        sizes = []
+    # if debug:
+    #     sizes = []
 
     files = find_image_files(input_folder, recursive)
     total_files = len(files)
@@ -794,7 +812,8 @@ def organize_files(
                     continue
 
                 # Обработка изображения
-                code, size = process_image_from_memory(
+                # code, size = process_image_from_memory(
+                code = process_image_from_memory(
                     img,
                     coords,
                     orig_name,
@@ -806,7 +825,8 @@ def organize_files(
                 )
 
                 if code:
-                    folder_name = ensure_valid_folder_name(code)
+                    # folder_name = ensure_valid_folder_name(code)  # нет необходимости после регулярки
+                    folder_name = code
                     target_folder = os.path.join(output_base, folder_name)
                     os.makedirs(target_folder, exist_ok=True)
                     target_path = os.path.join(target_folder, orig_name)
@@ -820,8 +840,8 @@ def organize_files(
                             f"{file_path} → {target_path}"
                         )  # вместо {orig_name} → {folder_name}\\          ")
                     moved_files += 1
-                    if debug:
-                        sizes.append(size)
+                    # if debug:
+                        # sizes.append(size)
                 else:
                     if not silent and not quiet:
                         print(f"Не распознан код в {file_path}")
@@ -830,8 +850,8 @@ def organize_files(
                 if debug:
                     print(f"Ошибка обработки {file_path}: {str(e)}")
 
-        if debug:
-            print(f"{sorted(sizes)}\n{min(sizes)=:.4f}, {max(sizes)=:.4f}")
+        # if debug:
+        #     print(f"{sorted(sizes)}\n{min(sizes)=:.4f}, {max(sizes)=:.4f}")
 
         return moved_files
 
