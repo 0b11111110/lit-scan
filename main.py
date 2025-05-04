@@ -731,7 +731,7 @@ def process_image_from_memory(
     code, size = "", 400
     if not need_manual_check:
         while not code and size > 10:
-            size -= 5 + size // 10
+            size -= 4 + size // 10
             resized = resize_and_invert(cropped, target_height=size)
             if resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.05: # если почти белый лист
                 return "А0000"      # папка для всех ведомостей и листов без кодов
