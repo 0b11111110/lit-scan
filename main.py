@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import shutil
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -422,9 +423,7 @@ def resize_and_invert(image, target_height=200):
 
 def recognize_with_tesseract(image):
     """Распознавание с помощью Tesseract"""
-    custom_config = r"--oem 3 --psm 6"
-    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"
-    # # не нужно, тк проблема с кодировкой и он их не так воспринимает
+    custom_config = r"--oem 3 --psm 8 ./tesseract_data/tesseract.config" # вся настройка в конфиге
     text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
     return "".join(c for c in text if c.isalnum())
 
@@ -733,7 +732,7 @@ def process_image_from_memory(
         while not code and size > 10:
             size -= 4 + size // 10
             resized = resize_and_invert(cropped, target_height=size)
-            if resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.05: # если почти белый лист
+            if resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.02: # если почти белый лист
                 return "А0000"      # папка для всех ведомостей и листов без кодов
             if debug:
                 debug_dir = "ocr_debug"
@@ -964,8 +963,9 @@ if __name__ == "__main__":
     if not os.path.isdir(args.input_folder):
         if args.debug:
             print(f"Ошибка: папка {args.input_folder} не существует!")
-        exit(1)
+        sys.exit(1)
 
+    start_time = time.time()
     recognized, unrecognized = organize_files(
         input_folder=args.input_folder,
         output_base=args.output_base,
@@ -978,7 +978,16 @@ if __name__ == "__main__":
         not_fix_wrong=args.not_fix_wrong,
         manual_only=args.manual_only,
     )
+    duration = time.time() - start_time
     if not args.silent:
-        print(
-            f"Распознано {recognized} кодов, не распознано - {unrecognized} ({100 * recognized / (recognized + unrecognized):.2f}%)"
-        )
+        if (total := recognized + unrecognized):
+            print(
+                f"Распознано {recognized} кодов, не распознано - {unrecognized} ({100 * recognized / (total):.2f}%)"
+                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60:02.0f}:{duration % 60:02.0f}"
+            )
+        else:
+            print(
+                f"Распознано {recognized} кодов, не распознано - {unrecognized}"
+                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60:02.0f}:{duration % 60:02.0f}"
+            )
+
