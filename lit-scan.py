@@ -5,13 +5,14 @@ import os
 import re
 import sys
 import shutil
+import time
 import tkinter as tk
 from tkinter import ttk
 import sys
 import cv2
 import numpy as np
 
-# import pytesseract
+import pytesseract
 
 import easyocr
 from PIL import Image, ImageTk
@@ -418,23 +419,13 @@ def resize_and_invert(image, target_height=200):
     return resized
 
 
-# def recognize_with_tesseract(image):
-#     """Распознавание с помощью Tesseract"""
-#     custom_config = r"--oem 3 --psm 6"
-#     # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"
-#     # # не нужно, тк проблема с кодировкой и он их не так воспринимает
-#     text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
-#     return "".join(c for c in text if c.isalnum())
-
-
-def recognize_with_easyocr(image, verbose=False):
-    reader = easyocr.Reader(
-        ["ru"],
-        gpu=False,
-        verbose=verbose,
-    )  # gpu=True для использования видеокарты
-    res = reader.readtext(image, allowlist="АГЕН0123456789", detail=0)
-    return res[0] if res else ""
+def recognize_with_tesseract(image):
+    """Распознавание с помощью Tesseract"""
+    custom_config = (
+        r"--oem 3 --psm 8 ./tesseract_data/tesseract.config"  # вся настройка в конфиге
+    )
+    text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
+    return "".join(c for c in text if c.isalnum())
 
 
 def correct_text(text):
@@ -701,14 +692,13 @@ def process_image_from_memory(
     number=1,
     total=1,
 ):
-    """Обработка изображения из памяти"""
+    """Обработка изображения из памяти с тройной проверкой кода"""
     x, y, w, h = coords
 
     # Вырезаем область интереса
     roi = img[y : y + h, x : x + w]
 
-    # Выравниваем наклон при необходимости
-    # roi = deskew_image(roi, max_angle=5)
+    # Выравниваем наклон
     roi, _ = deskew_image_by_frame(roi, max_angle=5, frame_thickness=8)
 
     if debug:
@@ -719,56 +709,50 @@ def process_image_from_memory(
     # Предварительная обработка
     processed = preprocess_image(roi)
     if debug:
-        debug_dir = "ocr_debug"
-        os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(f"{debug_dir}/{orig_name}_preprocessed.png", processed)
 
     # Находим контур текста
     contour = find_text_contour(processed)
+    cropped = crop_to_contour(processed, contour) if contour is not None else roi
 
-    if contour is not None:
-        # Обрезаем по контуру
-        cropped = crop_to_contour(processed, contour)
-        if cropped.size == 0:  # если пусто - белый лист
-            return "А0000"  # папка для всех ведомостей и листов без кодов
+    # Тройная проверка кода
+    codes = set()
+    size = 100
+    attempts = 0
+    max_attempts = 3  # Максимальное количество попыток распознавания
+    if cropped.size == 0: # если пусто - белый лист
+        return "А0000"      # папка для всех ведомостей и листов без кодов
+    if debug:
+        cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
+    while len(codes) < 3 and size > 30 and attempts < max_attempts:
+        size -= 4 + size // 10
+        attempts += 1
+        resized = resize_and_invert(cropped, target_height=size)
+
         if debug:
-            cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
-    else:
-        cropped = roi  # Если контур не найден, используем всю область
+            cv2.imwrite(f"{debug_dir}/{orig_name}_resized_{attempts}.png", resized)
 
-    code, size = "", 400
-    if not need_manual_check:
-        while not code and size > 10:
-            size -= 4 + size // 10
-            resized = resize_and_invert(cropped, target_height=size)
-            if (
-                resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.05
-            ):  # если почти белый лист
-                return "А0000"  # папка для всех ведомостей и листов без кодов
+        recognized_text = recognize_with_tesseract(resized)
+        corrected_text = correct_text(recognized_text)
+
+        # Проверяем формат кода (первая буква + 4 цифры)
+        if re.match(r"^[А-Я]\d{4}$", corrected_text):
+            codes.add(corrected_text)
             if debug:
-                debug_dir = "ocr_debug"
-                os.makedirs(debug_dir, exist_ok=True)
-                cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
-            recognized_text = recognize_with_easyocr(resized, verbose=debug)
-            corrected_text = correct_text(recognized_text)
-            code = (
-                code[0]
-                if (code := re.match(r"^([АГЕН]\d{4})$", corrected_text))
-                else ""
-            )
+                print(f"Попытка {attempts}: распознан код {corrected_text}")
+
+    # Если три одинаковых кода
+    if len(codes) == 1:
+        corrected_text = codes.pop()
+        if debug:
+            print(f"Код подтверждён: {corrected_text}")
     else:
         corrected_text = ""
+        if debug:
+            print(f"Коды не совпали: {codes}")
 
-    if not code:
-        if need_manual_check:
-            corrected_text = manual_check(roi, corrected_text, file_path, number, total)
-        else:
-            if debug:
-                print(
-                    corrected_text,
-                    file=open(f"{debug_dir}/{orig_name}.txt", "wt", encoding="utf-8"),
-                )
-            corrected_text = ""
+    if not corrected_text and need_manual_check:
+        corrected_text = manual_check(roi, corrected_text, file_path, number, total)
         if file_path not in needed_manual_recognizing:
             needed_manual_recognizing.append(file_path)
     # else:
@@ -979,6 +963,7 @@ if __name__ == "__main__":
             print(f"Ошибка: папка {args.input_folder} не существует!")
         sys.exit(1)
 
+    start_time = time.time()
     recognized, unrecognized = organize_files(
         input_folder=args.input_folder,
         output_base=args.output_base,
@@ -991,7 +976,15 @@ if __name__ == "__main__":
         not_fix_wrong=args.not_fix_wrong,
         manual_only=args.manual_only,
     )
+    duration = time.time() - start_time
     if not args.silent:
-        print(
-            f"Распознано {recognized} кодов, не распознано - {unrecognized} ({100 * recognized / (recognized + unrecognized):.2f}%)"
-        )
+        if total := recognized + unrecognized:
+            print(
+                f"Распознано {recognized} кодов, не распознано - {unrecognized} ({100 * recognized / (total):.2f}%)"
+                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60:02.0f}:{duration % 60:02.0f}"
+            )
+        else:
+            print(
+                f"Распознано {recognized} кодов, не распознано - {unrecognized}"
+                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60:02.0f}:{duration % 60:02.0f}"
+            )
