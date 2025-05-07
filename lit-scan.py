@@ -7,14 +7,13 @@ import sys
 import shutil
 import tkinter as tk
 from tkinter import ttk
-
-# import sys
+import sys
 import cv2
 import numpy as np
 
-import pytesseract
+# import pytesseract
 
-# import easyocr
+import easyocr
 from PIL import Image, ImageTk
 
 ## you have to have installed tesseract [in $PATH] with russian language https://github.com/tesseract-ocr/tesseract/releases
@@ -411,7 +410,6 @@ def resize_and_invert(image, target_height=200):
     else:
         return np.array([])
 
-
     # Инвертируем цвета (чтобы текст был черным на белом фоне)
     count_black = np.sum(resized < 128)
     if count_black > np.sum(resized.size - count_black):
@@ -420,13 +418,23 @@ def resize_and_invert(image, target_height=200):
     return resized
 
 
-def recognize_with_tesseract(image):
-    """Распознавание с помощью Tesseract"""
-    custom_config = r"--oem 3 --psm 6"
-    # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"
-    # # не нужно, тк проблема с кодировкой и он их не так воспринимает
-    text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
-    return "".join(c for c in text if c.isalnum())
+# def recognize_with_tesseract(image):
+#     """Распознавание с помощью Tesseract"""
+#     custom_config = r"--oem 3 --psm 6"
+#     # " -c tessedit_char_whitelist=АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789"
+#     # # не нужно, тк проблема с кодировкой и он их не так воспринимает
+#     text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
+#     return "".join(c for c in text if c.isalnum())
+
+
+def recognize_with_easyocr(image, verbose=False):
+    reader = easyocr.Reader(
+        ["ru"],
+        gpu=False,
+        verbose=verbose,
+    )  # gpu=True для использования видеокарты
+    res = reader.readtext(image, allowlist="АГЕН0123456789", detail=0)
+    return res[0] if res else ""
 
 
 def correct_text(text):
@@ -721,8 +729,8 @@ def process_image_from_memory(
     if contour is not None:
         # Обрезаем по контуру
         cropped = crop_to_contour(processed, contour)
-        if cropped.size == 0: # если пусто - белый лист
-            return "А0000"      # папка для всех ведомостей и листов без кодов
+        if cropped.size == 0:  # если пусто - белый лист
+            return "А0000"  # папка для всех ведомостей и листов без кодов
         if debug:
             cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
     else:
@@ -733,16 +741,20 @@ def process_image_from_memory(
         while not code and size > 10:
             size -= 4 + size // 10
             resized = resize_and_invert(cropped, target_height=size)
-            if resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.05: # если почти белый лист
-                return "А0000"      # папка для всех ведомостей и листов без кодов
+            if (
+                resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.05
+            ):  # если почти белый лист
+                return "А0000"  # папка для всех ведомостей и листов без кодов
             if debug:
                 debug_dir = "ocr_debug"
                 os.makedirs(debug_dir, exist_ok=True)
                 cv2.imwrite(f"{debug_dir}/{orig_name}_resized.png", resized)
-            recognized_text = recognize_with_tesseract(resized)
+            recognized_text = recognize_with_easyocr(resized, verbose=debug)
             corrected_text = correct_text(recognized_text)
             code = (
-                code[0] if (code := re.match(r"^([А-Я]\d{4})$", corrected_text)) else ""
+                code[0]
+                if (code := re.match(r"^([АГЕН]\d{4})$", corrected_text))
+                else ""
             )
     else:
         corrected_text = ""
@@ -762,7 +774,6 @@ def process_image_from_memory(
     # else:
     #     if debug:
     #         print(f"{(b:=np.sum(resized < 127))=}, {(b / (resized.size))=:.5f}")
-
 
     # return (corrected_text, resized.shape[0]) if corrected_text else (None, None)
     return corrected_text if corrected_text else None
@@ -802,10 +813,12 @@ def organize_files(
             orig_name = os.path.basename(file_path)
 
             try:
-                with open(file_path, 'rb') as f:
-                    img_data = np.frombuffer(f.read(), np.uint8)  # cv2 не дружит с кириллицей
+                with open(file_path, "rb") as f:
+                    img_data = np.frombuffer(
+                        f.read(), np.uint8
+                    )  # cv2 не дружит с кириллицей
                     img = cv2.imdecode(img_data, cv2.IMREAD_COLOR)
-                    del img_data # не уверен, что он уйдёт вместе с f
+                    del img_data  # не уверен, что он уйдёт вместе с f
                 if img is None:
                     if debug:
                         print(f"Ошибка загрузки: {file_path}")
@@ -841,7 +854,7 @@ def organize_files(
                         )  # вместо {orig_name} → {folder_name}\\          ")
                     moved_files += 1
                     # if debug:
-                        # sizes.append(size)
+                    # sizes.append(size)
                 else:
                     if not silent and not quiet:
                         print(f"Не распознан код в {file_path}")
@@ -964,7 +977,7 @@ if __name__ == "__main__":
     if not os.path.isdir(args.input_folder):
         if args.debug:
             print(f"Ошибка: папка {args.input_folder} не существует!")
-        exit(1)
+        sys.exit(1)
 
     recognized, unrecognized = organize_files(
         input_folder=args.input_folder,
