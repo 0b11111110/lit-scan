@@ -422,8 +422,11 @@ def resize_and_invert(image, target_height=200):
 
 def recognize_with_tesseract(image):
     """Распознавание с помощью Tesseract"""
+    tesdata_dir = "./tesseract_data/best_LSTM"  # самый точный
+    # tesdata_dir = "./tesseract_data/LSTM_Legasy"  # универсальный
+    config_dir = "./configs/tesseract.config"  # относительно tesdata
     custom_config = (
-        r"--oem 3 --psm 8 ./tesseract_data/tesseract.config"  # вся настройка в конфиге
+        f"--oem 3 --psm 8 --tessdata-dir {tesdata_dir} {config_dir}"  # вся настройка в конфиге
     )
     text = pytesseract.image_to_string(image, config=custom_config, lang="rus")
     return "".join(c for c in text if c.isalnum())
