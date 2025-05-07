@@ -8,12 +8,10 @@ import shutil
 import time
 import tkinter as tk
 from tkinter import ttk
-import sys
 import cv2
 import numpy as np
 
 import pytesseract
-
 import easyocr
 from PIL import Image, ImageTk
 
@@ -428,6 +426,16 @@ def recognize_with_tesseract(image):
     return "".join(c for c in text if c.isalnum())
 
 
+def recognize_with_easyocr(image, verbose=False):
+    reader = easyocr.Reader(
+        ["ru"],
+        gpu=False,
+        verbose=verbose,
+    )  # gpu=True для использования видеокарты
+    res = reader.readtext(image, allowlist="АГЕН0123456789", detail=0)
+    return res[0] if res else ""
+
+
 def correct_text(text):
     """Коррекция распознанного текста"""
     correction_map_letters = {
@@ -724,10 +732,14 @@ def process_image_from_memory(
         return "А0000"      # папка для всех ведомостей и листов без кодов
     if debug:
         cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
-    while len(codes) < 3 and size > 30 and attempts < max_attempts:
+    while len(codes) < 3 and size > 50 and attempts < max_attempts:
         size -= 4 + size // 10
         attempts += 1
         resized = resize_and_invert(cropped, target_height=size)
+        if (
+                resized.size == 0 or np.sum(resized < 127) / (resized.size) < 0.03
+            ):  # если почти белый лист
+                return "А0000"  # папка для всех ведомостей и листов без кодов
 
         if debug:
             cv2.imwrite(f"{debug_dir}/{orig_name}_resized_{attempts}.png", resized)
@@ -736,7 +748,7 @@ def process_image_from_memory(
         corrected_text = correct_text(recognized_text)
 
         # Проверяем формат кода (первая буква + 4 цифры)
-        if re.match(r"^[А-Я]\d{4}$", corrected_text):
+        if code_is_correct(corrected_text):
             codes.add(corrected_text)
             if debug:
                 print(f"Попытка {attempts}: распознан код {corrected_text}")
@@ -747,9 +759,10 @@ def process_image_from_memory(
         if debug:
             print(f"Код подтверждён: {corrected_text}")
     else:
-        corrected_text = ""
         if debug:
             print(f"Коды не совпали: {codes}")
+        corrected_text = recognize_with_easyocr(cropped, verbose=debug)
+        corrected_text = corrected_text if code_is_correct(correct_text) else ""
 
     if not corrected_text and need_manual_check:
         corrected_text = manual_check(roi, corrected_text, file_path, number, total)
@@ -761,6 +774,9 @@ def process_image_from_memory(
 
     # return (corrected_text, resized.shape[0]) if corrected_text else (None, None)
     return corrected_text if corrected_text else None
+
+def code_is_correct(code):
+    return re.match(r"^[АГЕН]\d{4}$", code)
 
 
 def organize_files(
