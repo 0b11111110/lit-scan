@@ -1,4 +1,5 @@
-opencv-python   
+opencv-python
 numpy
 pytesseract
 pillow
+openalpr
