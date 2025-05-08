@@ -24,6 +24,7 @@ from PIL import Image, ImageTk
 # Настройки по умолчанию
 DEFAULT_COORDS = (1100, 0, 1200, 700)  # x, y, w, h
 needed_manual_recognizing = []  # для не распознанных
+t = 0 # tesseract распознал
 
 
 def translit(name):
@@ -417,7 +418,7 @@ def resize_and_invert(image, target_height=200):
     return resized
 
 
-def recognize_with_tesseract(image):
+def old_recognize_with_tesseract(image):
     """Распознавание с помощью Tesseract"""
     custom_config = (
         r"--oem 3 --psm 8 ./tesseract_data/tesseract.config"  # вся настройка в конфиге
@@ -426,14 +427,72 @@ def recognize_with_tesseract(image):
     return "".join(c for c in text if c.isalnum())
 
 
+def recognize_with_tesseract(image):
+    """Распознавание с помощью Tesseract с проверкой уверенности"""
+    # Конфигурация для распознавания одного блока текста с whitelist
+    custom_config = r"--oem 3 --psm 8 ./tesseract_data/tesseract.config"  # вся настройка в конфиге
+
+    # Получаем данные с информацией об уверенности
+    data = pytesseract.image_to_data(
+        image,
+        config=custom_config,
+        lang="rus",
+        output_type=pytesseract.Output.DICT
+    )
+
+    # Собираем текст и рассчитываем среднюю уверенность
+    recognized_text = ""
+    total_confidence = 0
+    valid_chars = 0
+    has_bad_char = False
+
+    for i in range(len(data['text'])):
+        text = data['text'][i].strip()
+        conf = int(data['conf'][i])
+
+        if text and conf > 0:  # Игнорируем пустые и отрицательные значения
+            recognized_text += text
+            total_confidence += conf
+            valid_chars += 1
+            if conf < 60:
+                has_bad_char = True
+                break
+
+    # Если нет валидных символов
+    if valid_chars == 0:
+        return ""
+
+    # Рассчитываем среднюю уверенность
+    avg_confidence = total_confidence / valid_chars
+
+    # Корректируем текст
+    corrected_text = correct_text(recognized_text)
+
+    # Возвращаем только если:
+    # Уверенность >= 60%
+    # print(avg_confidence, corrected_text)
+    if not has_bad_char and code_is_correct(corrected_text) and avg_confidence >= 60:
+        print(f"t{avg_confidence:.0f} ", end="")
+        return corrected_text
+
+    return ""
+
 def recognize_with_easyocr(image, verbose=False):
     reader = easyocr.Reader(
         ["ru"],
         gpu=False,
         verbose=verbose,
     )  # gpu=True для использования видеокарты
-    res = reader.readtext(image, allowlist="АГЕН0123456789", detail=0)
-    return res[0] if res else ""
+    res = reader.readtext(
+        image,
+        allowlist="АГЕН0123456789",
+        # detail=0
+    )
+    # return res[0] if res else ""
+    if res and res[0][-1] > 0.6:
+        print(f"e{res[0][-1]:.2f} ", end="")
+        return res[0][-2]
+    return ""
 
 
 def correct_text(text):
@@ -725,14 +784,15 @@ def process_image_from_memory(
 
     # Тройная проверка кода
     codes = set()
+    all_codes = []
     size = 100
     attempts = 0
-    max_attempts = 3  # Максимальное количество попыток распознавания
+    max_attempts = 10  # Максимальное количество попыток распознавания
     if cropped.size == 0: # если пусто - белый лист
         return "А0000"      # папка для всех ведомостей и листов без кодов
     if debug:
         cv2.imwrite(f"{debug_dir}/{orig_name}_cropped.png", cropped)
-    while len(codes) < 3 and size > 50 and attempts < max_attempts:
+    while len(all_codes) < 3 and size > 20 and attempts < max_attempts:
         size -= 4 + size // 10
         attempts += 1
         resized = resize_and_invert(cropped, target_height=size)
@@ -747,22 +807,24 @@ def process_image_from_memory(
         recognized_text = recognize_with_tesseract(resized)
         corrected_text = correct_text(recognized_text)
 
-        # Проверяем формат кода (первая буква + 4 цифры)
+        # Проверяем формат кода
         if code_is_correct(corrected_text):
             codes.add(corrected_text)
+            all_codes.append(corrected_text)
             if debug:
                 print(f"Попытка {attempts}: распознан код {corrected_text}")
 
     # Если три одинаковых кода
-    if len(codes) == 1:
+    if len(codes) == 1 and len(all_codes) >= 2:
         corrected_text = codes.pop()
+        global t
+        t += 1
         if debug:
             print(f"Код подтверждён: {corrected_text}")
     else:
         if debug:
             print(f"Коды не совпали: {codes}")
-        corrected_text = recognize_with_easyocr(cropped, verbose=debug)
-        corrected_text = corrected_text if code_is_correct(correct_text) else ""
+        corrected_text = easyocr_and_correct(cropped, verbose=debug)
 
     if not corrected_text and need_manual_check:
         corrected_text = manual_check(roi, corrected_text, file_path, number, total)
@@ -778,6 +840,9 @@ def process_image_from_memory(
 def code_is_correct(code):
     return re.match(r"^[АГЕН]\d{4}$", code)
 
+def easyocr_and_correct(image, verbose):
+    code = recognize_with_easyocr(image, verbose)
+    return code if code_is_correct(code) else ""
 
 def organize_files(
     input_folder,
@@ -867,6 +932,124 @@ def organize_files(
         #     print(f"{sorted(sizes)}\n{min(sizes)=:.4f}, {max(sizes)=:.4f}")
 
         return moved_files
+
+    def process2(files, need_manual_check=False, debug=False):
+        #TODO: переделать на соседние имена, а не порядковые номера!
+
+        moved_files = 0
+        pending_file = None  # Для хранения предыдущего (нечётного) файла
+        n_prev_file = 1
+
+        for i, file_path in enumerate(files):
+            print_progress(i, total_files, prefix="Обработка файлов: ", silent=silent)
+
+            # Получаем оригинальное имя файла
+            orig_name = os.path.basename(file_path)
+
+            try:
+                with open(file_path, "rb") as f:
+                    img_data = np.frombuffer(
+                        f.read(), np.uint8
+                    )  # cv2 не дружит с кириллицей
+                    img = cv2.imdecode(img_data, cv2.IMREAD_COLOR)
+                    del img_data  # не уверен, что он уйдёт вместе с f
+                if img is None:
+                    if debug:
+                        print(f"Ошибка загрузки: {file_path}")
+                    continue
+
+                # Обработка изображения
+                # code, size = process_image_from_memory(
+                code = process_image_from_memory(
+                    img,
+                    coords,
+                    orig_name,
+                    file_path,
+                    need_manual_check,
+                    debug,
+                    number=i,
+                    total=total_files,
+                )
+
+                n_file = int(orig_name[-7:-4]) # .../М_302_003.jpg -> 003
+                if n_file - n_prev_file > 1:
+                    move(pending_file[1], os.path.join(output_base, pending_file[3]))
+                    moved_files += 1
+                    if n_file % 2 == 0: # значит перед ним не было первой страницы
+                        if code:
+                            move(file_path, os.path.join(output_base, code))
+                            moved_files += 1
+                        else:
+                            needed_manual_recognizing.append(file_path)
+                            if not silent and not quiet:
+                                print(f"Не распознан код в {file_path}")
+                        pending_file = None
+                        continue
+                if n_file % 2 == 1:  # Нечётный файл - первая страница
+                    pending_file = (n_file, file_path, orig_name, code)
+                else:  # Чётный файл
+                    if pending_file:
+                        n_prev_file, prev_file_path, prev_orig_name, prev_code = pending_file
+
+                        def code_of_pair(prev_code, code, first_time=True):
+                            # Определяем конечный код
+                            if code and not prev_code:  # Если текущий распознан, а предыдущий нет
+                                return code
+                            elif prev_code and not code:  # Если предыдущий распознан, а текущий нет
+                                return prev_code
+                            elif code and prev_code and code == prev_code:  # Оба распознаны и совпадают
+                                return code
+                            else:  # Не распознаны или разные коды
+                                if first_time:
+                                    return code_of_pair(easyocr_and_correct(prev_file_path, debug),
+                                                        easyocr_and_correct(file_path, debug),
+                                                        first_time=False)
+                                return None
+                        final_code = code_of_pair(prev_code, code)
+
+                        if final_code:
+                            folder_name = final_code
+                            target_folder = os.path.join(output_base, folder_name)
+                            os.makedirs(target_folder, exist_ok=True)
+
+                            # Перемещаем оба файла
+                            for path, name in [(prev_file_path, prev_orig_name), (file_path, orig_name)]:
+                                target_path = os.path.join(target_folder, name)
+                                move(path, target_path)
+                            moved_files += 2
+                        else:
+                            needed_manual_recognizing.extend([prev_file_path, file_path])
+                            if not silent and not quiet:
+                                print(f"Не распознаны или разные коды: {prev_file_path} и {file_path}")
+
+                        pending_file = None  # Сбрасываем ожидание пары
+            except Exception as e:
+                if debug:
+                    print(f"Ошибка обработки {file_path}: {str(e)}")
+                if pending_file:
+                    needed_manual_recognizing.append(pending_file[1])
+                    pending_file = None
+                needed_manual_recognizing.append(file_path)
+
+        # Обработка оставшегося непарного файла в конце
+        if pending_file:
+            if pending_file[3]:
+                move(pending_file[1], os.path.join(output_base, pending_file[3]))
+            else:
+                needed_manual_recognizing.append(pending_file[0])
+                if not silent and not quiet:
+                    print(f"Оставшийся непарный файл: {pending_file[0]}")
+
+        return moved_files
+
+    def move(path, target_path):
+        if copy:
+            shutil.copy2(path, target_path)
+        else:
+            shutil.move(path, target_path)
+        if not quiet and not silent:
+            print(f"{path} → {target_path}")
+
 
     # Первый проход - автоматическое распознавание
     global needed_manual_recognizing
@@ -997,10 +1180,11 @@ if __name__ == "__main__":
         if total := recognized + unrecognized:
             print(
                 f"Распознано {recognized} кодов, не распознано - {unrecognized} ({100 * recognized / (total):.2f}%)"
-                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60:02.0f}:{duration % 60:02.0f}"
+                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60 % 60:02.0f}:{duration % 60:02.0f}"
             )
         else:
             print(
                 f"Распознано {recognized} кодов, не распознано - {unrecognized}"
-                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60:02.0f}:{duration % 60:02.0f}"
+                f", это заняло {duration // (60 * 60):02.0f}:{duration // 60 % 60:02.0f}:{duration % 60:02.0f}"
             )
+    print(t, t/total)
