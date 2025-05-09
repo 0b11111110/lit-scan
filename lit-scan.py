@@ -493,7 +493,7 @@ def code_is_correct(code):
 
 def easyocr_and_correct(image, verbose):
     code = recognize_with_easyocr(image, verbose)
-    return code if code_is_correct(code) else ""
+    return code if code_is_correct(code) else None
 
 
 def organize_files(
@@ -567,6 +567,7 @@ def organize_files(
                             if not silent and not quiet:
                                 print(f"Не распознан код в {file_path}")
                         pending_file = None
+                        n_prev_file = n_file
                         continue
                 if n_file % 2 == 1:  # Нечётный файл - первая страница
                     pending_file = (n_file, file_path, orig_name, code)
@@ -576,9 +577,9 @@ def organize_files(
 
                         def code_of_pair(prev_code, code):
                             # Определяем конечный код
-                            if code and not prev_code:  # Если текущий распознан, а предыдущий нет
+                            if code and (not prev_code or prev_code == "А0000"):  # Если текущий распознан, а предыдущий нет
                                 return code
-                            elif prev_code and not code:  # Если предыдущий распознан, а текущий нет
+                            elif prev_code and (not code or code == "А0000"):  # Если предыдущий распознан, а текущий нет
                                 return prev_code
                             elif code and prev_code and code == prev_code:  # Оба распознаны и совпадают
                                 return code
@@ -602,6 +603,7 @@ def organize_files(
                                 print(f"Не распознаны или разные коды: {prev_file_path} и {file_path}")
 
                         pending_file = None  # Сбрасываем ожидание пары
+                n_prev_file = n_file
             except Exception as e:
                 if debug:
                     print(f"Ошибка обработки {file_path}: {str(e)}")
@@ -654,6 +656,20 @@ def organize_files(
             print(f"\nНачинаем ручную проверку {unrec} нераспознанных файлов")
         rec += process2(needed_manual_recognizing, need_manual_check=True, debug=debug)
         needed_manual_recognizing.clear()
+
+    if args.unprocessed_file:
+        try:
+            if os.path.basename(args.unprocessed_file) == args.unprocessed_file:
+                file = os.path.join(args.output_base, args.unprocessed_file)
+            else:
+                file = args.unprocessed_file
+            with open(file, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(needed_manual_recognizing))
+            if not silent:
+                print(f"\nСписок необработанных файлов сохранен в: {args.unprocessed_file}")
+        except IOError as e:
+            if not silent:
+                print(f"\nОшибка сохранения списка необработанных файлов: {str(e)}")
 
     return (rec, unrec)
 
@@ -729,6 +745,13 @@ if __name__ == "__main__":
         "--silent",
         action="store_true",
         help="Не выводить ничего",
+    )
+    parser.add_argument(
+    '-u', '--unprocessed',
+    dest='unprocessed_file',
+    type=str,
+    default='0-unprocessed.txt',
+    help='Файл для сохранения списка необработанных изображений (по умолчанию: output_base/0-unprocessed.txt)'
     )
     parser.add_argument(
         "-d",
