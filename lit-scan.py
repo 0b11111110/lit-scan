@@ -469,8 +469,10 @@ def process_image_from_memory(
     # Находим контур текста
     contour = find_text_contour(processed)
     cropped = crop_to_contour(processed, contour) if contour is not None else roi
-    if cropped.size == 0 or np.sum(cropped < 127) / (cropped.size) < 0.03: # если пусто - белый лист
-        return "А0000"      # папка для всех ведомостей и листов без кодов
+    if (
+        cropped.size == 0 or np.sum(cropped < 127) / (cropped.size) < 0.03
+    ):  # если пусто - белый лист
+        return "А0000"  # папка для всех ведомостей и листов без кодов
 
     # Проверка кода с помощью EasyOCR
     corrected_text = easyocr_and_correct(cropped, debug)
@@ -521,7 +523,7 @@ def organize_files(
     def process2(files, need_manual_check=False, debug=False):
         moved_files = 0
         pending_file = None  # Для хранения предыдущего (нечётного) файла
-        n_prev_file = 3 # т.к. первые - ведомости
+        n_prev_file = 3  # т.к. первые - ведомости
 
         for i, file_path in enumerate(files):
             print_progress(i, total_files, prefix="Обработка файлов: ", silent=silent)
@@ -553,12 +555,15 @@ def organize_files(
                     total=total_files,
                 )
 
-                n_file = int(orig_name[-7:-4]) # .../М_302_003.jpg -> 003
+                n_file = int(os.path.splitext(orig_name)[0][-3:])  # .../М_302_003.jpg -> 003
                 if n_file - n_prev_file > 1:
                     if pending_file:
-                        move(pending_file[1], os.path.join(output_base, pending_file[3], pending_file[2]))
+                        move(
+                            pending_file[1],
+                            os.path.join(output_base, pending_file[3], pending_file[2]),
+                        )
                         moved_files += 1
-                    if n_file % 2 == 0: # значит перед ним не было первой страницы
+                    if n_file % 2 == 0:  # значит перед ним не было первой страницы
                         if code:
                             move(file_path, os.path.join(output_base, code, orig_name))
                             moved_files += 1
@@ -573,18 +578,27 @@ def organize_files(
                     pending_file = (n_file, file_path, orig_name, code)
                 else:  # Чётный файл
                     if pending_file:
-                        n_prev_file, prev_file_path, prev_orig_name, prev_code = pending_file
+                        n_prev_file, prev_file_path, prev_orig_name, prev_code = (
+                            pending_file
+                        )
 
                         def code_of_pair(prev_code, code):
                             # Определяем конечный код
-                            if code and (not prev_code or prev_code == "А0000"):  # Если текущий распознан, а предыдущий нет
+                            if code and (
+                                not prev_code or prev_code == "А0000"
+                            ):  # Если текущий распознан, а предыдущий нет
                                 return code
-                            elif prev_code and (not code or code == "А0000"):  # Если предыдущий распознан, а текущий нет
+                            elif prev_code and (
+                                not code or code == "А0000"
+                            ):  # Если предыдущий распознан, а текущий нет
                                 return prev_code
-                            elif code and prev_code and code == prev_code:  # Оба распознаны и совпадают
+                            elif (
+                                code and prev_code and code == prev_code
+                            ):  # Оба распознаны и совпадают
                                 return code
                             else:  # Не распознаны или разные коды
                                 return None
+
                         final_code = code_of_pair(prev_code, code)
 
                         if final_code:
@@ -593,14 +607,21 @@ def organize_files(
                             os.makedirs(target_folder, exist_ok=True)
 
                             # Перемещаем оба файла
-                            for path, name in [(prev_file_path, prev_orig_name), (file_path, orig_name)]:
+                            for path, name in [
+                                (prev_file_path, prev_orig_name),
+                                (file_path, orig_name),
+                            ]:
                                 target_path = os.path.join(target_folder, name)
                                 move(path, target_path)
                             moved_files += 2
                         else:
-                            needed_manual_recognizing.extend([prev_file_path, file_path])
+                            needed_manual_recognizing.extend(
+                                [prev_file_path, file_path]
+                            )
                             if not silent and not quiet:
-                                print(f"Не распознаны или разные коды: {prev_file_path} и {file_path}")
+                                print(
+                                    f"Не распознаны или разные коды: {prev_file_path} и {file_path}"
+                                )
 
                         pending_file = None  # Сбрасываем ожидание пары
                 n_prev_file = n_file
@@ -615,7 +636,10 @@ def organize_files(
         # Обработка оставшегося непарного файла в конце
         if pending_file:
             if pending_file[3]:
-                move(pending_file[1], os.path.join(output_base, pending_file[3], pending_file[2]))
+                move(
+                    pending_file[1],
+                    os.path.join(output_base, pending_file[3], pending_file[2]),
+                )
             else:
                 needed_manual_recognizing.append(pending_file[0])
                 if not silent and not quiet:
@@ -659,17 +683,21 @@ def organize_files(
 
     if args.unprocessed_file:
         if args.unprocessed_file == "-" and not silent:
-            print(f"\nСписок необработанных файлов:{'\n'.join(needed_manual_recognizing)}")
+            print(
+                f"\nСписок необработанных файлов:{'\n'.join(needed_manual_recognizing)}"
+            )
         else:
             try:
                 if os.path.basename(args.unprocessed_file) == args.unprocessed_file:
-                    file = os.path.join(args.output_base, args.unprocessed_file)
+                    file = os.path.join(args.output_base, "А0000", args.unprocessed_file)
                 else:
                     file = args.unprocessed_file
-                with open(file, 'w', encoding='utf-8') as f:
-                    f.write('\n'.join(needed_manual_recognizing))
+                with open(file, "w", encoding="utf-8") as f:
+                    f.write("\n".join(needed_manual_recognizing))
                 if not silent:
-                    print(f"\nСписок необработанных файлов сохранен в: {args.unprocessed_file}")
+                    print(
+                        f"\nСписок необработанных файлов сохранен в: {args.unprocessed_file}"
+                    )
             except IOError as e:
                 if not silent:
                     print(f"\nОшибка сохранения списка необработанных файлов: {str(e)}")
@@ -677,10 +705,11 @@ def organize_files(
     return (rec, unrec)
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Программа для автоматической сортировки сканов по распознанным печатным шифрам в рамке",
+        description="Программа для автоматической сортировки сканов по распознанным печатным шифрам в рамке. " \
+        "Файлы должны иметь трёхзначные номера в конце имени файла с ведущими нулями, " \
+        "лицевые стороны - нечётные номера.",
         add_help=False,
     )
     parser.add_argument("input_folder", help="Папка с исходными изображениями")
@@ -750,17 +779,20 @@ if __name__ == "__main__":
         help="Не выводить ничего",
     )
     parser.add_argument(
-    '-u', '--unprocessed',
-    dest='unprocessed_file',
-    type=str,
-    default='0-unprocessed.txt',
-    help='Файл для сохранения списка необработанных изображений (по умолчанию: output_base/0-unprocessed.txt)'
+        "-u",
+        "--unprocessed",
+        dest="unprocessed_file",
+        type=str,
+        default="0-unprocessed.txt",
+        help='Файл для сохранения списка необработанных изображений '
+        '(по умолчанию: output_base/А0000/0-unprocessed.txt), "-" для stdout',
     )
     parser.add_argument(
         "-d",
         "--debug",
         action="store_true",
-        help="Сохранять промежуточные изображения для отладки",
+        help="Сохранять промежуточные изображения для отладки, " \
+        "более информативный вывод программы",
     )
     parser.add_argument(
         "-?",
