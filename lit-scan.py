@@ -658,18 +658,21 @@ def organize_files(
         needed_manual_recognizing.clear()
 
     if args.unprocessed_file:
-        try:
-            if os.path.basename(args.unprocessed_file) == args.unprocessed_file:
-                file = os.path.join(args.output_base, args.unprocessed_file)
-            else:
-                file = args.unprocessed_file
-            with open(file, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(needed_manual_recognizing))
-            if not silent:
-                print(f"\nСписок необработанных файлов сохранен в: {args.unprocessed_file}")
-        except IOError as e:
-            if not silent:
-                print(f"\nОшибка сохранения списка необработанных файлов: {str(e)}")
+        if args.unprocessed_file == "-" and not silent:
+            print(f"\nСписок необработанных файлов:{'\n'.join(needed_manual_recognizing)}")
+        else:
+            try:
+                if os.path.basename(args.unprocessed_file) == args.unprocessed_file:
+                    file = os.path.join(args.output_base, args.unprocessed_file)
+                else:
+                    file = args.unprocessed_file
+                with open(file, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(needed_manual_recognizing))
+                if not silent:
+                    print(f"\nСписок необработанных файлов сохранен в: {args.unprocessed_file}")
+            except IOError as e:
+                if not silent:
+                    print(f"\nОшибка сохранения списка необработанных файлов: {str(e)}")
 
     return (rec, unrec)
 
