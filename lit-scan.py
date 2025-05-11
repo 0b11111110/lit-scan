@@ -1,3 +1,20 @@
+
+
+
+
+
+
+
+# хуже tesseract-а и головной больше
+
+
+
+
+
+
+
+
+
 """recognizing codes on scanned sheets"""
 
 import argparse
@@ -12,6 +29,7 @@ import cv2
 import numpy as np
 
 import easyocr
+from paddleocr import PaddleOCR
 from PIL import Image, ImageTk
 
 # Настройки по умолчанию
@@ -232,6 +250,85 @@ def recognize_with_easyocr(image, verbose=False):
     if res and res[0][-1] > 0.6:
         return res[0][-2]
     return ""
+
+
+def recognize_with_paddle(image, debug=False):
+
+    ocr = PaddleOCR(
+        lang="ru",
+        det_db_thresh=0.1,          # Низкий порог для мелкого текста
+        det_db_unclip_ratio=2.0,     # Широкая зона детекции
+        rec_algorithm="SVTR_LCNet",  # Лучшая модель для символов
+        rec_char_dict_path="custom_dict.txt",
+        use_dilation=True,           # Для улучшения детекции
+        show_log=False               # Убрать спам в консоль
+    )
+    try:
+        results = ocr.ocr(image, cls=False)
+    except Exception as e:
+        if debug:
+            print (f"ошибка распознавания {e}")
+        return None
+    for r in results:
+        if r:
+            # code = correct_text(r[0][1][0])
+            code=""
+            if args.debug:
+                print(r, code)
+            # if code_is_correct(code) and r[0][1][1] >= 0.6:
+            #     return code
+    return None
+
+
+def correct_text(text):
+    """Коррекция распознанного текста"""
+    correction_map_letters = {
+        "0": "О",
+        "4": "А",
+        "A": "А",
+        "B": "В",
+        "C": "С",
+        "D": "О",
+        "E": "Е",
+        "H": "Н",
+        "K": "К",
+        "M": "М",
+        "O": "О",
+        "P": "Р",
+        "T": "Т",
+        "X": "Х",
+        "Y": "У",
+    }
+    correction_map_digits = {
+        "А": "4",
+        "O": "0",  # латинская
+        "О": "0",
+        "З": "3",
+        "Ч": "4",
+        "Б": "6",
+        "T": "7",  # латинская
+        "Т": "7",
+        " ": "",
+        "D": "0",
+        "S": "5",
+    }
+    text = text.upper()
+    if text:
+        corrected = [
+            (
+                correction_map_letters[text[0]]
+                if text[0] in correction_map_letters
+                else text[0]
+            )
+        ]
+    else:
+        return ""
+    for c in text[1:]:
+        if c in correction_map_digits:
+            corrected.append(correction_map_digits[c])
+        elif c in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789":
+            corrected.append(c)
+    return "".join(corrected)
 
 
 def manual_check(img, predicted_text, filename="", cur_num=1, total=1):
@@ -470,12 +567,12 @@ def process_image_from_memory(
     contour = find_text_contour(processed)
     cropped = crop_to_contour(processed, contour) if contour is not None else roi
     if (
-        cropped.size == 0 or np.sum(cropped < 127) / (cropped.size) < 0.03
+        cropped.size == 0 or np.mean(cropped) > 240 or np.sum(cropped < 127) / (cropped.size) < 0.06
     ):  # если пусто - белый лист
         return "А0000"  # папка для всех ведомостей и листов без кодов
 
     # Проверка кода с помощью EasyOCR
-    corrected_text = easyocr_and_correct(cropped, debug)
+    corrected_text = recognize_with_paddle(cropped, debug)
 
     if not corrected_text and need_manual_check:
         corrected_text = manual_check(roi, corrected_text, file_path, number, total)

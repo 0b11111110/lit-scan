@@ -2,3 +2,6 @@ opencv-python
 numpy
 pillow
 easyocr
+--index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/
+paddlepaddle>=3.0.0rc0
+paddleocr>=2.6
